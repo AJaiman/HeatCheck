@@ -1,6 +1,7 @@
 import { Stack } from "expo-router";
 import { Tabs } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
+import { View, Text, StyleSheet } from 'react-native';
 
 export default function RootLayout() {
   return (
@@ -31,8 +32,19 @@ export default function RootLayout() {
         },
         headerTintColor: '#FFFFFF', // White text
         headerTitleStyle: {
-          fontWeight: 'bold',
+          fontWeight: '900', // Extra bold for sporty look
+          fontSize: 28, // Bigger font size
+          fontFamily: 'System', // System font for better weight support
         },
+        headerTitle: 'HeatCheck',
+        headerTitleAlign: 'left', // Ensure left alignment
+        headerRight: () => (
+          <View style={styles.profileContainer}>
+            <View style={styles.profileImage}>
+              <Ionicons name="person" size={20} color="#FF6B35" />
+            </View>
+          </View>
+        ),
       })}
     >
       <Tabs.Screen name="index" options={{ href: null }} />
@@ -42,3 +54,19 @@ export default function RootLayout() {
     </Tabs>
   );
 }
+
+const styles = StyleSheet.create({
+  profileContainer: {
+    marginRight: 15,
+  },
+  profileImage: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: '#FFFFFF',
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 2,
+    borderColor: '#FFFFFF',
+  },
+});
