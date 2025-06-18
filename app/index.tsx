@@ -1,20 +1,83 @@
 import { Redirect } from 'expo-router';
-import { useState } from 'react';
-import { View, Text, TouchableOpacity, TextInput, StyleSheet } from 'react-native';
+import { useState, useEffect } from 'react';
+import { View, Text, TouchableOpacity, TextInput, StyleSheet, Alert } from 'react-native';
+import { supabase } from '../lib/supabase';
 import { LinearGradient } from 'expo-linear-gradient';
 
 export default function Index() {
-  //return <Redirect href="/profile" />;
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    // Check initial auth state
+    const checkAuthState = async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      setIsAuthenticated(!!session);
+    };
+
+    checkAuthState();
+
+    // Listen for auth state changes
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(
+      (event, session) => {
+        setIsAuthenticated(!!session);
+      }
+    );
+
+    return () => subscription.unsubscribe();
+  }, []);
+
+  // Show loading while checking auth state
+  if (isAuthenticated === null) {
+    return (
+      <LinearGradient
+        colors={['#FF6B35', '#E55A2B', '#1A1A1A']}
+        style={styles.container}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 0, y: 1 }}
+      >
+        <Text style={styles.title}>Loading...</Text>
+      </LinearGradient>
+    );
+  }
+
+  // Redirect to profile if authenticated
+  if (isAuthenticated) {
+    return <Redirect href="/profile" />;
+  }
+
+  // Show login if not authenticated
   return <Login />;
 }
 
 function Login() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [loading, setLoading] = useState(false);
 
-  const handleLogin = () => {
-    // TODO: Implement login logic
-    console.log('Login attempt:', { email, password });
+  const handleLogin = async () => {
+    if (!email || !password) {
+      Alert.alert('Error', 'Please fill in all fields');
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email: email,
+        password: password,
+      });
+
+      if (error) {
+        Alert.alert('Login Error', error.message);
+      } else {
+        Alert.alert('Success', 'Logged in successfully!');
+        // The auth state change will automatically redirect to profile
+      }
+    } catch (error) {
+      Alert.alert('Error', 'An unexpected error occurred');
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -35,6 +98,7 @@ function Login() {
         keyboardType="email-address"
         autoCapitalize="none"
         autoCorrect={false}
+        editable={!loading}
       />
       
       <TextInput
@@ -46,10 +110,15 @@ function Login() {
         secureTextEntry
         autoCapitalize="none"
         autoCorrect={false}
+        editable={!loading}
       />
       
-      <TouchableOpacity style={styles.button} onPress={handleLogin}>
-        <Text style={styles.buttonText}>Login</Text>
+      <TouchableOpacity 
+        style={[styles.button, loading && styles.buttonDisabled]} 
+        onPress={handleLogin}
+        disabled={loading}
+      >
+        <Text style={styles.buttonText}>{loading ? 'Logging in...' : 'Login'}</Text>
       </TouchableOpacity>
     </LinearGradient>
   );
@@ -59,10 +128,45 @@ function SignUp() {
   const [hoopName, setHoopName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [loading, setLoading] = useState(false);
 
-  const handleSignUp = () => {
-    // TODO: Implement sign up logic
-    console.log('Sign up attempt:', { hoopName, email, password });
+  const handleSignUp = async () => {
+    if (!hoopName || !email || !password) {
+      Alert.alert('Error', 'Please fill in all fields');
+      return;
+    }
+
+    if (password.length < 6) {
+      Alert.alert('Error', 'Password must be at least 6 characters long');
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const { data, error } = await supabase.auth.signUp({
+        email: email,
+        password: password,
+        options: {
+          data: {
+            hoop_name: hoopName,
+          }
+        }
+      });
+
+      if (error) {
+        Alert.alert('Sign Up Error', error.message);
+      } else {
+        Alert.alert('Success', 'Account created successfully! Please check your email to verify your account.');
+        // Clear the form
+        setHoopName('');
+        setEmail('');
+        setPassword('');
+      }
+    } catch (error) {
+      Alert.alert('Error', 'An unexpected error occurred');
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -82,6 +186,7 @@ function SignUp() {
         onChangeText={setHoopName}
         autoCapitalize="none"
         autoCorrect={false}
+        editable={!loading}
       />
       
       <TextInput
@@ -93,6 +198,7 @@ function SignUp() {
         keyboardType="email-address"
         autoCapitalize="none"
         autoCorrect={false}
+        editable={!loading}
       />
       
       <TextInput
@@ -104,10 +210,15 @@ function SignUp() {
         secureTextEntry
         autoCapitalize="none"
         autoCorrect={false}
+        editable={!loading}
       />
       
-      <TouchableOpacity style={styles.button} onPress={handleSignUp}>
-        <Text style={styles.buttonText}>Sign Up</Text>
+      <TouchableOpacity 
+        style={[styles.button, loading && styles.buttonDisabled]} 
+        onPress={handleSignUp}
+        disabled={loading}
+      >
+        <Text style={styles.buttonText}>{loading ? 'Creating Account...' : 'Sign Up'}</Text>
       </TouchableOpacity>
     </LinearGradient>
   );
@@ -151,6 +262,10 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.3,
     shadowRadius: 4,
     elevation: 5,
+  },
+  buttonDisabled: {
+    backgroundColor: '#666666',
+    opacity: 0.7,
   },
   buttonText: {
     color: '#FFFFFF',
