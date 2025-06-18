@@ -47,7 +47,7 @@ export default function RootLayout() {
         ),
       })}
     >
-      <Tabs.Screen name="index" options={{ href: null }} />
+      <Tabs.Screen name="index" options={{ href: null, tabBarStyle: { display: 'none' }, headerShown: false }} />
       <Tabs.Screen name="workouts" options={{ title: 'Workouts' }} />
       <Tabs.Screen name="games" options={{ title: 'Games' }} />
       <Tabs.Screen name="profile" options={{ title: 'Profile' }} />

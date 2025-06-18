@@ -1,3 +1,4 @@
+import React from 'react';
 import { Redirect } from 'expo-router';
 import { useState, useEffect } from 'react';
 import { View, Text, TouchableOpacity, TextInput, StyleSheet, Alert } from 'react-native';
@@ -46,10 +47,25 @@ export default function Index() {
   }
 
   // Show login if not authenticated
-  return <Login />;
+  return <AuthForms />;
 }
 
-function Login() {
+function AuthForms() {
+  const [showLogin, setShowLogin] = useState(true);
+
+  return (
+    <LinearGradient
+      colors={['#FF6B35', '#E55A2B', '#1A1A1A']}
+      style={styles.container}
+      start={{ x: 0, y: 0 }}
+      end={{ x: 0, y: 1 }}
+    >
+      {showLogin ? <Login onSwitchToSignUp={() => setShowLogin(false)} /> : <SignUp onSwitchToLogin={() => setShowLogin(true)} />}
+    </LinearGradient>
+  );
+}
+
+function Login({ onSwitchToSignUp }: { onSwitchToSignUp: () => void }) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
@@ -81,12 +97,7 @@ function Login() {
   };
 
   return (
-    <LinearGradient
-      colors={['#FF6B35', '#E55A2B', '#1A1A1A']}
-      style={styles.container}
-      start={{ x: 0, y: 0 }}
-      end={{ x: 0, y: 1 }}
-    >
+    <>
       <Text style={styles.title}>Login</Text>
       
       <TextInput
@@ -120,11 +131,15 @@ function Login() {
       >
         <Text style={styles.buttonText}>{loading ? 'Logging in...' : 'Login'}</Text>
       </TouchableOpacity>
-    </LinearGradient>
+
+      <TouchableOpacity style={styles.switchButton} onPress={onSwitchToSignUp}>
+        <Text style={styles.switchButtonText}>Don't have an account? Sign Up</Text>
+      </TouchableOpacity>
+    </>
   );
 }
 
-function SignUp() {
+function SignUp({ onSwitchToLogin }: { onSwitchToLogin: () => void }) {
   const [hoopName, setHoopName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -170,12 +185,7 @@ function SignUp() {
   };
 
   return (
-    <LinearGradient
-      colors={['#FF6B35', '#E55A2B', '#1A1A1A']}
-      style={styles.container}
-      start={{ x: 0, y: 0 }}
-      end={{ x: 0, y: 1 }}
-    >
+    <>
       <Text style={styles.title}>Sign Up</Text>
       
       <TextInput
@@ -220,7 +230,11 @@ function SignUp() {
       >
         <Text style={styles.buttonText}>{loading ? 'Creating Account...' : 'Sign Up'}</Text>
       </TouchableOpacity>
-    </LinearGradient>
+
+      <TouchableOpacity style={styles.switchButton} onPress={onSwitchToLogin}>
+        <Text style={styles.switchButtonText}>Already have an account? Login</Text>
+      </TouchableOpacity>
+    </>
   );
 }
 
@@ -272,5 +286,15 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: 'bold',
     textAlign: 'center',
+  },
+  switchButton: {
+    marginTop: 20,
+    paddingVertical: 10,
+  },
+  switchButtonText: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    textAlign: 'center',
+    textDecorationLine: 'underline',
   },
 });
