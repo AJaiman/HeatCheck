@@ -1,17 +1,39 @@
+import { Workout, WorkoutRating, WorkoutWithDrills } from '../types/workout';
 import { supabase } from './supabase';
-import { Workout, Drill, WorkoutWithDrills, WorkoutRating } from '../types/workout';
 
 export const workoutService = {
   // Get popular workouts
   async getPopularWorkouts(): Promise<Workout[]> {
-    const { data, error } = await supabase
+    const { data: { user } } = await supabase.auth.getUser();
+    
+    let query = supabase
       .from('popular_workouts')
       .select('*')
       .order('save_count', { ascending: false })
       .limit(20);
     
+    const { data, error } = await query;
+    
     if (error) throw error;
-    return data || [];
+    
+    if (!user) {
+      // If no user, return workouts without saved status
+      return (data || []).map(workout => ({ ...workout, is_saved: false }));
+    }
+    
+    // Get user's saved workout IDs
+    const { data: savedWorkouts } = await supabase
+      .from('user_saved_workouts')
+      .select('workout_id')
+      .eq('user_id', user.id);
+    
+    const savedWorkoutIds = new Set(savedWorkouts?.map(sw => sw.workout_id) || []);
+    
+    // Add is_saved field to each workout
+    return (data || []).map(workout => ({
+      ...workout,
+      is_saved: savedWorkoutIds.has(workout.id)
+    }));
   },
 
   // Get user's saved workouts

@@ -1,5 +1,6 @@
-import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ScrollView, Alert, ActivityIndicator } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
+import React, { useEffect, useState } from 'react';
+import { ActivityIndicator, Alert, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { workoutService } from '../lib/workoutService';
 import { Workout } from '../types/workout';
 
@@ -51,13 +52,19 @@ export default function Workouts() {
       <View style={styles.workoutHeader}>
         <Text style={styles.workoutTitle}>{workout.name}</Text>
         <TouchableOpacity 
-          style={[styles.saveButton, isSaved && styles.savedButton]} 
+          style={[styles.heartButton, isSaved && styles.savedHeartButton]} 
           onPress={() => handleSaveWorkout(workout.id)}
           disabled={savingWorkout === workout.id}
         >
-          <Text style={styles.saveButtonText}>
-            {savingWorkout === workout.id ? '...' : (isSaved ? '✓' : 'Save')}
-          </Text>
+          {savingWorkout === workout.id ? (
+            <Text style={styles.heartIcon}>...</Text>
+          ) : (
+            <Ionicons 
+              name={isSaved ? "heart" : "heart-outline"} 
+              size={24} 
+              color="#FF6B35" 
+            />
+          )}
         </TouchableOpacity>
       </View>
       
@@ -140,7 +147,7 @@ function PopularWorkouts({
       <Text style={styles.sectionSubtitle}>Discover trending workouts from the community</Text>
       
       {workouts.length > 0 ? (
-        workouts.map(workout => renderWorkoutCard(workout, false))
+        workouts.map(workout => renderWorkoutCard(workout, workout.is_saved))
       ) : (
         <View style={styles.emptyState}>
           <Text style={styles.emptyStateText}>No popular workouts available</Text>
@@ -255,21 +262,18 @@ const styles = StyleSheet.create({
     flex: 1,
     marginRight: 10,
   },
-  saveButton: {
-    backgroundColor: '#FF6B35',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 6,
-    minWidth: 50,
+  heartButton: {
+    padding: 8,
+    minWidth: 40,
+    minHeight: 40,
     alignItems: 'center',
+    justifyContent: 'center',
   },
-  savedButton: {
-    backgroundColor: '#4CAF50',
+  savedHeartButton: {
+    // No additional styling needed for saved state
   },
-  saveButtonText: {
-    color: '#FFFFFF',
-    fontSize: 12,
-    fontWeight: 'bold',
+  heartIcon: {
+    fontSize: 18,
   },
   workoutDescription: {
     fontSize: 14,
