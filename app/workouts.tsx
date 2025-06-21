@@ -277,10 +277,10 @@ function WorkoutDetailModal({
         <View style={modalStyles.drillsSection}>
           <Text style={modalStyles.sectionTitle}>Drills</Text>
           <ScrollView style={modalStyles.drillsList} showsVerticalScrollIndicator={false}>
-            {workout.drills.map((drill, index) => (
-              <View key={drill.id} style={modalStyles.drillCard}>
+            {workout.drills.map((drill) => (
+              <View key={`${drill.id}-${drill.order_index}`} style={modalStyles.drillCard}>
                 <View style={modalStyles.drillHeader}>
-                  <Text style={modalStyles.drillNumber}>{index + 1}</Text>
+                  <Text style={modalStyles.drillNumber}>{drill.order_index}</Text>
                   <Text style={modalStyles.drillName}>{drill.name}</Text>
                   <View style={modalStyles.drillType}>
                     <Text style={modalStyles.drillTypeText}>
