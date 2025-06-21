@@ -1,6 +1,7 @@
 import { Ionicons } from '@expo/vector-icons';
 import React, { useEffect, useState } from 'react';
 import { ActivityIndicator, Alert, Modal, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import WorkoutPlayer from '../components/WorkoutPlayer';
 import { workoutService } from '../lib/workoutService';
 import { Workout, WorkoutWithDrills } from '../types/workout';
 
@@ -13,6 +14,7 @@ export default function Workouts() {
   const [selectedWorkout, setSelectedWorkout] = useState<WorkoutWithDrills | null>(null);
   const [showWorkoutDetail, setShowWorkoutDetail] = useState(false);
   const [loadingWorkoutDetail, setLoadingWorkoutDetail] = useState(false);
+  const [isWorkoutActive, setIsWorkoutActive] = useState(false);
 
   useEffect(() => {
     loadWorkouts();
@@ -40,7 +42,6 @@ export default function Workouts() {
       setSavingWorkout(workoutId);
       await workoutService.toggleSaveWorkout(workoutId);
       
-      // Refresh both lists to update save counts and saved status
       await loadWorkouts();
     } catch (error) {
       Alert.alert('Error', 'Failed to save workout');
@@ -62,6 +63,16 @@ export default function Workouts() {
     } finally {
       setLoadingWorkoutDetail(false);
     }
+  };
+
+  const handleStartWorkout = () => {
+    setShowWorkoutDetail(false);
+    setIsWorkoutActive(true);
+  };
+
+  const handleWorkoutFinish = () => {
+    setIsWorkoutActive(false);
+    setSelectedWorkout(null);
   };
 
   const renderWorkoutCard = (workout: Workout, isSaved: boolean = false) => (
@@ -100,9 +111,6 @@ export default function Workouts() {
         <Text style={styles.workoutStat}>📊 {workout.difficulty_level}</Text>
         {workout.average_rating ? (
           <Text style={styles.workoutStat}>⭐ {workout.average_rating.toFixed(1)}</Text>
-        ) : null}
-        {workout.save_count && workout.save_count > 0 ? (
-          <Text style={styles.workoutStat}>💾 {workout.save_count}</Text>
         ) : null}
       </View>
     </TouchableOpacity>
@@ -157,14 +165,25 @@ export default function Workouts() {
       </ScrollView>
 
       {/* Workout Detail Modal */}
-      <WorkoutDetailModal
-        visible={showWorkoutDetail}
-        workout={selectedWorkout}
-        onClose={() => {
-          setShowWorkoutDetail(false);
-          setSelectedWorkout(null);
-        }}
-      />
+      {selectedWorkout && (
+        <WorkoutDetailModal
+          visible={showWorkoutDetail}
+          workout={selectedWorkout}
+          onClose={() => {
+            setShowWorkoutDetail(false);
+            setSelectedWorkout(null);
+          }}
+          onStart={handleStartWorkout}
+        />
+      )}
+
+      {selectedWorkout && (
+        <WorkoutPlayer
+          visible={isWorkoutActive}
+          workout={selectedWorkout}
+          onClose={handleWorkoutFinish}
+        />
+      )}
     </View>
   );
 }
@@ -221,18 +240,14 @@ function SavedWorkouts({
 function WorkoutDetailModal({ 
   visible, 
   workout, 
-  onClose 
+  onClose,
+  onStart,
 }: { 
   visible: boolean; 
   workout: WorkoutWithDrills | null; 
   onClose: () => void;
+  onStart: () => void;
 }) {
-  const handleStartWorkout = () => {
-    // TODO: Navigate to workout execution screen
-    Alert.alert('Start Workout', 'Workout execution feature coming soon!');
-    onClose();
-  };
-
   if (!workout) return null;
 
   return (
@@ -246,10 +261,10 @@ function WorkoutDetailModal({
         {/* Header */}
         <View style={modalStyles.header}>
           <TouchableOpacity onPress={onClose} style={modalStyles.closeButton}>
-            <Ionicons name="close" size={24} color="#FFFFFF" />
+            <Ionicons name="close-circle" size={28} color="#666" />
           </TouchableOpacity>
-          <Text style={modalStyles.title}>{workout.name}</Text>
-          <TouchableOpacity onPress={handleStartWorkout} style={modalStyles.startButton}>
+          <Text style={modalStyles.title} numberOfLines={1}>{workout.name}</Text>
+          <TouchableOpacity onPress={onStart} style={modalStyles.startButton}>
             <Text style={modalStyles.startButtonText}>Start</Text>
           </TouchableOpacity>
         </View>
