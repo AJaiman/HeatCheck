@@ -1,7 +1,10 @@
 import { Ionicons } from '@expo/vector-icons';
+import { useRouter } from 'expo-router';
 import React, { useState } from 'react';
 import {
+    Alert,
     Keyboard,
+    Modal,
     ScrollView,
     StyleSheet,
     Text,
@@ -10,19 +13,83 @@ import {
     TouchableWithoutFeedback,
     View
 } from 'react-native';
+import { gameService } from '../lib/gameService';
+import { supabase } from '../lib/supabase';
+import { GameMode, GameType } from '../types/game';
 
 export default function Games() {
   const [gameCode, setGameCode] = useState('');
+  const [isModalVisible, setModalVisible] = useState(false);
+  const [gameToCreate, setGameToCreate] = useState<{ mode: GameMode; type: GameType } | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
+  const router = useRouter();
 
-  const handleCreateGame = (mode: string, type: 'Casual' | 'Ranked') => {
-    // Placeholder for functionality
-    alert(`Creating a ${type} ${mode} game!`);
+  const handleCreateGame = async (mode: GameMode, type: GameType, teamSize?: number) => {
+    if (mode === 'Classic' && !teamSize) {
+      setGameToCreate({ mode, type });
+      setModalVisible(true);
+      return;
+    }
+
+    setIsLoading(true);
+    setModalVisible(false);
+
+    try {
+      const newGameCode = await gameService.createGame(mode, type, teamSize);
+      const { data: { user } } = await supabase.auth.getUser();
+
+      if (!user) throw new Error("User not found");
+
+      // Navigate to the lobby
+      router.push({
+        pathname: '/lobby',
+        params: { 
+          game_code: newGameCode, 
+          game_mode: mode, 
+          host_id: user.id 
+        },
+      });
+
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'An unknown error occurred.';
+      Alert.alert('Error Creating Game', message);
+    } finally {
+      setIsLoading(false);
+      setGameToCreate(null);
+    }
   };
 
   const handleJoinGame = () => {
     // Placeholder for functionality
     alert(`Joining game with code: ${gameCode}`);
   };
+
+  const TeamSizeModal = () => (
+    <Modal
+      visible={isModalVisible}
+      transparent={true}
+      animationType="fade"
+      onRequestClose={() => setModalVisible(false)}>
+      <View style={styles.modalContainer}>
+        <View style={styles.modalContent}>
+          <Text style={styles.modalTitle}>Select Team Size</Text>
+          {[1, 2, 3, 4, 5].map((size) => (
+            <TouchableOpacity
+              key={size}
+              style={styles.modalButton}
+              onPress={() => gameToCreate && handleCreateGame(gameToCreate.mode, gameToCreate.type, size)}>
+              <Text style={styles.modalButtonText}>{`${size} v ${size}`}</Text>
+            </TouchableOpacity>
+          ))}
+          <TouchableOpacity
+            style={[styles.modalButton, styles.cancelButton]}
+            onPress={() => setModalVisible(false)}>
+            <Text style={styles.modalButtonText}>Cancel</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    </Modal>
+  );
 
   const GameModeCard = ({
     icon,
@@ -59,6 +126,7 @@ export default function Games() {
   return (
     <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
       <ScrollView style={styles.container} contentContainerStyle={styles.contentContainer}>
+        <TeamSizeModal />
         {/* Join Game Section */}
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Join a Game</Text>
@@ -101,6 +169,11 @@ export default function Games() {
             onPressCreate={(type) => handleCreateGame('King of the Court', type)}
           />
         </View>
+        {isLoading && (
+            <View style={styles.loadingOverlay}>
+                <Text style={styles.loadingText}>Creating Game...</Text>
+            </View>
+        )}
       </ScrollView>
     </TouchableWithoutFeedback>
   );
@@ -200,4 +273,52 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
   },
+  // Modal Styles
+  modalContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+  },
+  modalContent: {
+    backgroundColor: '#2C2C2C',
+    borderRadius: 12,
+    padding: 20,
+    width: '80%',
+    alignItems: 'center',
+  },
+  modalTitle: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    color: '#FFFFFF',
+    marginBottom: 20,
+  },
+  modalButton: {
+    backgroundColor: '#4A4A4A',
+    borderRadius: 8,
+    paddingVertical: 12,
+    width: '100%',
+    alignItems: 'center',
+    marginBottom: 10,
+  },
+  modalButtonText: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  cancelButton: {
+    backgroundColor: '#FF6B35',
+    marginTop: 10,
+  },
+  loadingOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.8)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  loadingText: {
+    color: 'white',
+    fontSize: 18,
+    fontWeight: 'bold',
+  }
 }); 
