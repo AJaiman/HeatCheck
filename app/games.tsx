@@ -2,16 +2,16 @@ import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import React, { useState } from 'react';
 import {
-    Alert,
-    Keyboard,
-    Modal,
-    ScrollView,
-    StyleSheet,
-    Text,
-    TextInput,
-    TouchableOpacity,
-    TouchableWithoutFeedback,
-    View
+  Alert,
+  Keyboard,
+  Modal,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  TouchableWithoutFeedback,
+  View
 } from 'react-native';
 import { gameService } from '../lib/gameService';
 import { supabase } from '../lib/supabase';
@@ -59,9 +59,31 @@ export default function Games() {
     }
   };
 
-  const handleJoinGame = () => {
-    // Placeholder for functionality
-    alert(`Joining game with code: ${gameCode}`);
+  const handleJoinGame = async () => {
+    if (!gameCode) {
+      Alert.alert('Error', 'Please enter a game code.');
+      return;
+    }
+    setIsLoading(true);
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) throw new Error('User not found');
+      const game = await gameService.joinGameByCode(gameCode.trim().toUpperCase(), user.id);
+      // Navigate to the lobby
+      router.push({
+        pathname: '/lobby',
+        params: {
+          game_code: game.game_code,
+          game_mode: game.game_mode,
+          host_id: game.host_id,
+        },
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'An unknown error occurred.';
+      Alert.alert('Error Joining Game', message);
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const TeamSizeModal = () => (

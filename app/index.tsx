@@ -1,9 +1,8 @@
-import React from 'react';
-import { Redirect } from 'expo-router';
-import { useState, useEffect } from 'react';
-import { View, Text, TouchableOpacity, TextInput, StyleSheet, Alert } from 'react-native';
-import { supabase } from '../lib/supabase';
 import { LinearGradient } from 'expo-linear-gradient';
+import { Redirect } from 'expo-router';
+import React, { useEffect, useState } from 'react';
+import { Alert, StyleSheet, Text, TextInput, TouchableOpacity } from 'react-native';
+import { supabase } from '../lib/supabase';
 
 export default function Index() {
   const [isAuthenticated, setIsAuthenticated] = useState<boolean | null>(null);
@@ -163,7 +162,7 @@ function SignUp({ onSwitchToLogin }: { onSwitchToLogin: () => void }) {
         password: password,
         options: {
           data: {
-            hoop_name: hoopName,
+            display_name: hoopName,
           }
         }
       });

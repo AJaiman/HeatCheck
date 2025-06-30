@@ -24,6 +24,7 @@ export interface GamePlayer {
   score: number;
   is_winner: boolean;
   joined_at: string;
-  // This will be joined from the users table
-  username: string;
+  // Optionally joined from the profiles table
+  hoopname?: string;
+  avatar_url?: string;
 } 

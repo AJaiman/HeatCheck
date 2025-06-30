@@ -1,20 +1,11 @@
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Alert, Clipboard, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { gameService } from '../lib/gameService';
+import { supabase } from '../lib/supabase';
 import { GameMode, GamePlayer } from '../types/game';
-
-// Mock Data
-const MOCK_PLAYERS: GamePlayer[] = [
-  { id: '1', game_id: '123', user_id: 'user_a', username: 'PointGodWithAReallyLongName', team: 'Team A', score: 0, is_winner: false, joined_at: '' },
-  { id: '2', game_id: '123', user_id: 'user_b', username: 'AnkleBreaker', team: 'Team A', score: 0, is_winner: false, joined_at: '' },
-  { id: '3', game_id: '123', user_id: 'user_c', username: 'DunkMaster', team: 'Team B', score: 0, is_winner: false, joined_at: '' },
-  { id: '4', game_id: '123', user_id: 'user_d', username: 'Swish', team: 'Team B', score: 0, is_winner: false, joined_at: '' },
-  { id: '5', game_id: '123', user_id: 'user_e', username: 'TheRookie', team: 'Team A', score: 0, is_winner: false, joined_at: '' },
-  { id: '6', game_id: '123', user_id: 'user_f', username: 'Clutch', team: 'Team B', score: 0, is_winner: false, joined_at: '' },
-];
-const MOCK_CURRENT_USER_ID = 'user_a'; 
 
 const TEAM_A_COLOR = '#3B82F6'; // Blue
 const TEAM_B_COLOR = '#8B5CF6'; // Purple
@@ -25,14 +16,56 @@ const PLAYER_COLORS = ['#FF6B35', '#3B82F6', '#10B981', '#F59E0B', '#EF4444', '#
 export default function LobbyScreen() {
   const router = useRouter();
   const { game_code, game_mode, host_id } = useLocalSearchParams<{ game_code: string; game_mode: GameMode; host_id: string }>();
-  const [players] = useState<GamePlayer[]>(MOCK_PLAYERS);
+  const [players, setPlayers] = useState<GamePlayer[]>([]);
+  const [currentUserId, setCurrentUserId] = useState<string | null>(null);
+  const [currentHoopname, setCurrentHoopname] = useState<string>('');
+  const [maxPlayersPerTeam, setMaxPlayersPerTeam] = useState<number>(5);
+  const [hostId, setHostId] = useState<string | null>(host_id || null);
+  const presenceChannelRef = useRef<any>(null);
+  const existingPlayersRef = useRef<GamePlayer[]>([]);
+  const refreshIntervalRef = useRef<number | null>(null);
 
-  const isHost = MOCK_CURRENT_USER_ID === host_id;
+  const isHost = currentUserId === hostId;
 
-  const handleLeave = () => {
+  const handleLeave = async () => {
     Alert.alert('Leave Game', 'Are you sure you want to leave the lobby?', [
       { text: 'Cancel', style: 'cancel' },
-      { text: 'Leave', style: 'destructive', onPress: () => router.back() },
+      { text: 'Leave', style: 'destructive', onPress: async () => {
+        try {
+          console.log('🚪 User leaving lobby...');
+          
+          // Get the current user's ID
+          let userId: string | null = currentUserId ?? null;
+          if (!userId) {
+            const { data: { user } } = await supabase.auth.getUser();
+            userId = user?.id ?? null;
+          }
+          if (!userId) throw new Error('User not authenticated');
+          
+          console.log('👤 Leaving user ID:', userId);
+          
+          // Remove from presence channel first
+          if (presenceChannelRef.current) {
+            console.log('📡 Removing from presence channel...');
+            await presenceChannelRef.current.untrack();
+            presenceChannelRef.current.unsubscribe();
+            presenceChannelRef.current = null;
+            console.log('✅ Removed from presence channel');
+          }
+          
+          // Get the game ID and remove from database
+          const game = await gameService.getGameByCode(game_code);
+          if (!game) throw new Error('Game not found');
+          console.log('🗄️ Removing from database...');
+          await gameService.leaveGame(game.id, userId);
+          console.log('✅ Removed from database');
+          
+          router.back();
+        } catch (err: any) {
+          console.error('❌ Error leaving game:', err);
+          Alert.alert('Error', err.message || 'Failed to leave the game.');
+        }
+      } },
     ]);
   };
 
@@ -49,67 +82,363 @@ export default function LobbyScreen() {
             {rank && <Text style={styles.playerRank}>#{rank}</Text>}
             <LinearGradient colors={['#4A4A4A', '#2C2C2C']} style={styles.playerAvatar} />
             <View style={styles.playerDetails}>
-              <Text style={styles.playerText} numberOfLines={1}>{player.username}</Text>
+              <Text style={styles.playerText} numberOfLines={1}>{player.hoopname || 'Unknown Player'}</Text>
               {role && <Text style={styles.playerRole}>{role}</Text>}
             </View>
         </View>
-        {host_id === player.user_id && <Ionicons name="ribbon" size={20} color="#FFD700" />}
+        {hostId === player.user_id && <Ionicons name="ribbon" size={20} color="#FFD700" />}
     </View>
   );
 
   const ClassicView = () => {
     const teamA = players.filter(p => p.team === 'Team A');
     const teamB = players.filter(p => p.team === 'Team B');
-    const maxTeamSize = 5; // Example value
+
+    // Helper to render player or ghost card
+    const renderPlayerOrGhost = (player: GamePlayer | null, key: string | number, teamColor: string) => {
+      if (player) {
+        return <PlayerCard key={key} player={player} teamColor={teamColor} />;
+      } else {
+        return (
+          <View key={`ghost-${key}`} style={[styles.playerCard, { borderLeftColor: teamColor, borderLeftWidth: 4, opacity: 0.5 }]}> 
+            <View style={styles.playerInfo}>
+              <LinearGradient colors={['#4A4A4A', '#2C2C2C']} style={styles.playerAvatar} />
+              <View style={styles.playerDetails}>
+                <Text style={styles.playerText} numberOfLines={1}>Waiting for player…</Text>
+              </View>
+            </View>
+          </View>
+        );
+      }
+    };
 
     return (
       <>
-        <Text style={[styles.sectionHeader, { color: TEAM_A_COLOR }]}>TEAM A ({teamA.length}/{maxTeamSize})</Text>
-        {teamA.map((p) => <PlayerCard key={p.id} player={p} teamColor={TEAM_A_COLOR} />)}
+        <Text style={[styles.sectionHeader, { color: TEAM_A_COLOR }]}>TEAM A ({teamA.length}/{maxPlayersPerTeam})</Text>
+        {teamA.map((p) => renderPlayerOrGhost(p, p.id, TEAM_A_COLOR))}
+        {[...Array(Math.max(0, maxPlayersPerTeam - teamA.length))].map((_, i) => renderPlayerOrGhost(null, `A-${i}`, TEAM_A_COLOR))}
 
         <View style={styles.divider} />
 
-        <Text style={[styles.sectionHeader, { color: TEAM_B_COLOR }]}>TEAM B ({teamB.length}/{maxTeamSize})</Text>
-        {teamB.map((p) => <PlayerCard key={p.id} player={p} teamColor={TEAM_B_COLOR} />)}
+        <Text style={[styles.sectionHeader, { color: TEAM_B_COLOR }]}>TEAM B ({teamB.length}/{maxPlayersPerTeam})</Text>
+        {teamB.map((p) => renderPlayerOrGhost(p, p.id, TEAM_B_COLOR))}
+        {[...Array(Math.max(0, maxPlayersPerTeam - teamB.length))].map((_, i) => renderPlayerOrGhost(null, `B-${i}`, TEAM_B_COLOR))}
       </>
     );
   };
   
-  const KOTCView = () => {
-    const onCourt = players.slice(0, 2);
-    const queue = players.slice(2);
-    const offensivePlayer = onCourt.length > 0 ? onCourt[0] : null;
-    const defensivePlayer = onCourt.length > 1 ? onCourt[1] : null;
-
+  const TwentyOneView = () => {
+    const maxPlayers = 4;
+    const numGhosts = Math.max(0, maxPlayers - players.length);
     return (
       <>
-        <Text style={styles.sectionHeader}>ON COURT</Text>
-        {offensivePlayer && (
-            <PlayerCard player={offensivePlayer} role="KING" teamColor="#FF6B35" />
-        )}
-
-        {offensivePlayer && defensivePlayer && (
-            <View style={styles.vsContainerKOTC}>
-                <Text style={styles.vsText}>VS</Text>
+        <Text style={styles.sectionHeader}>PLAYERS ({players.length})</Text>
+        {players.slice(0, maxPlayers).map((p, i) => <PlayerCard key={p.id} player={p} rank={i+1} teamColor={PLAYER_COLORS[i % PLAYER_COLORS.length]} />)}
+        {[...Array(numGhosts)].map((_, i) => (
+          <View key={`ghost-21-${i}`} style={[styles.playerCard, { borderLeftColor: PLAYER_COLORS[(players.length + i) % PLAYER_COLORS.length], borderLeftWidth: 4, opacity: 0.5 }]}> 
+            <View style={styles.playerInfo}>
+              <LinearGradient colors={['#4A4A4A', '#2C2C2C']} style={styles.playerAvatar} />
+              <View style={styles.playerDetails}>
+                <Text style={styles.playerText} numberOfLines={1}>Waiting for player…</Text>
+              </View>
             </View>
-        )}
-        
-        {defensivePlayer && (
-            <PlayerCard player={defensivePlayer} role="CHALLENGER" teamColor="#3B82F6" />
-        )}
-
-        {queue.length > 0 && <Text style={styles.sectionHeader}>QUEUE</Text>}
-        {queue.map((p, i) => <PlayerCard key={p.id} player={p} rank={i+1} />)}
+          </View>
+        ))}
       </>
     );
   };
 
-  const TwentyOneView = () => (
-    <>
-      <Text style={styles.sectionHeader}>PLAYERS ({players.length})</Text>
-      {players.map((p, i) => <PlayerCard key={p.id} player={p} rank={i+1} teamColor={PLAYER_COLORS[i % PLAYER_COLORS.length]} />)}
-    </>
-  );
+  const maxPlayersForKOTC = 8; // You can make this dynamic if needed
+
+  const KOTCView = () => {
+    const maxQueue = 3;
+    const onCourt = [players[0] || null, players[1] || null];
+    const queue = players.slice(2, 2 + maxQueue);
+    const numQueueGhosts = Math.max(0, maxQueue - queue.length);
+
+    return (
+      <>
+        <Text style={styles.sectionHeader}>ON COURT</Text>
+        {/* King */}
+        {onCourt[0] ? (
+          <PlayerCard player={onCourt[0]} role="KING" teamColor="#FF6B35" />
+        ) : (
+          <View key="ghost-king" style={[styles.playerCard, { borderLeftColor: '#FF6B35', borderLeftWidth: 4, opacity: 0.5 }]}> 
+            <View style={styles.playerInfo}>
+              <LinearGradient colors={['#4A4A4A', '#2C2C2C']} style={styles.playerAvatar} />
+              <View style={styles.playerDetails}>
+                <Text style={styles.playerText} numberOfLines={1}>Waiting for King…</Text>
+              </View>
+            </View>
+          </View>
+        )}
+        {/* VS Divider */}
+        <View style={styles.vsContainerKOTC}>
+          <Text style={styles.vsText}>VS</Text>
+        </View>
+        {/* Challenger */}
+        {onCourt[1] ? (
+          <PlayerCard player={onCourt[1]} role="CHALLENGER" teamColor="#3B82F6" />
+        ) : (
+          <View key="ghost-challenger" style={[styles.playerCard, { borderLeftColor: '#3B82F6', borderLeftWidth: 4, opacity: 0.5 }]}> 
+            <View style={styles.playerInfo}>
+              <LinearGradient colors={['#4A4A4A', '#2C2C2C']} style={styles.playerAvatar} />
+              <View style={styles.playerDetails}>
+                <Text style={styles.playerText} numberOfLines={1}>Waiting for Challenger…</Text>
+              </View>
+            </View>
+          </View>
+        )}
+        {/* Queue */}
+        {(queue.length > 0 || numQueueGhosts > 0) && <Text style={styles.sectionHeader}>QUEUE</Text>}
+        {queue.map((p, i) => <PlayerCard key={p.id} player={p} rank={i+1} />)}
+        {[...Array(numQueueGhosts)].map((_, i) => (
+          <View key={`ghost-kotc-queue-${i}`} style={[styles.playerCard, { borderLeftColor: '#888', borderLeftWidth: 4, opacity: 0.5 }]}> 
+            <View style={styles.playerInfo}>
+              <LinearGradient colors={['#4A4A4A', '#2C2C2C']} style={styles.playerAvatar} />
+              <View style={styles.playerDetails}>
+                <Text style={styles.playerText} numberOfLines={1}>Waiting for player…</Text>
+              </View>
+            </View>
+          </View>
+        ))}
+      </>
+    );
+  };
+
+  useEffect(() => {
+    let mounted = true;
+    async function fetchUserAndJoinPresence() {
+      if (!game_code) return;
+      
+      try {
+        console.log('🔄 Starting lobby setup for game:', game_code);
+        
+        // Get user info
+        const { data: { user } } = await supabase.auth.getUser();
+        if (!user) {
+          console.log('❌ No user found');
+          return;
+        }
+        console.log('👤 User found:', user.id);
+        setCurrentUserId(user.id);
+        
+        // Fetch hoopname from profile
+        const { data: profile } = await supabase
+          .from('profiles')
+          .select('hoopname')
+          .eq('id', user.id)
+          .maybeSingle();
+        const hoopname = profile?.hoopname || user.user_metadata?.display_name || '';
+        console.log('🏷️ Hoopname:', hoopname);
+        setCurrentHoopname(hoopname);
+        
+        // Get game info
+        const game = await gameService.getGameByCode(game_code);
+        if (!game) {
+          console.log('❌ Game not found:', game_code);
+          return;
+        }
+        console.log('🎮 Game found:', game.id, 'Max players:', game.max_players_per_team);
+        if (mounted) setMaxPlayersPerTeam(game.max_players_per_team || 5);
+        if (mounted) setHostId(game.host_id);
+        
+        // Join the game in the database first
+        try {
+          await gameService.joinGameByCode(game_code, user.id);
+          console.log('✅ Joined game in database');
+        } catch (error) {
+          console.log('⚠️ User already in game or join error:', error);
+        }
+        
+        // Fetch existing players from database
+        const existingPlayers = await gameService.getPlayersForGame(game.id);
+        console.log('📋 Existing players from DB:', existingPlayers);
+        existingPlayersRef.current = existingPlayers || [];
+        if (mounted) setPlayers(existingPlayers || []);
+        
+        // Join presence channel
+        const channelName = `lobby-presence-${game_code}`;
+        console.log('📡 Joining presence channel:', channelName);
+        
+        const channel = supabase.channel(channelName, {
+          config: { presence: { key: user.id } }
+        });
+        
+        // Listen for presence sync events
+        channel.on('presence', { event: 'sync' }, () => {
+          console.log('🔄 Presence sync event triggered');
+          updatePlayerListFromPresence(channel, existingPlayersRef.current);
+        });
+        
+        // Listen for presence join/leave events
+        channel.on('presence', { event: 'join' }, ({ key, newPresences }) => {
+          console.log('➕ Player joined presence:', key, newPresences);
+          updatePlayerListFromPresence(channel, existingPlayersRef.current);
+        });
+        
+        channel.on('presence', { event: 'leave' }, ({ key, leftPresences }) => {
+          console.log('➖ Player left presence:', key, leftPresences);
+          updatePlayerListFromPresence(channel, existingPlayersRef.current);
+        });
+        
+        // Helper function to update player list from presence
+        const updatePlayerListFromPresence = (channel: any, existingPlayers: GamePlayer[]) => {
+          const state = channel.presenceState();
+          console.log('👥 Current presence state:', state);
+          
+          // Merge presence data with database data
+          const mergedPlayers: GamePlayer[] = [];
+          const presenceUserIds = new Set();
+          
+          // First, add all presence players
+          Object.values(state).forEach((arr: any) => {
+            arr.forEach((presence: any) => {
+              console.log('👤 Processing presence:', presence);
+              presenceUserIds.add(presence.user_id);
+              
+              // Find corresponding database player
+              const dbPlayer = existingPlayers.find(p => p.user_id === presence.user_id);
+              
+              mergedPlayers.push({
+                id: presence.user_id, // Use user_id as id for presence players
+                user_id: presence.user_id,
+                hoopname: presence.hoopname || dbPlayer?.hoopname || 'Unknown Player',
+                team: dbPlayer?.team || undefined, // Keep database team assignment
+                score: dbPlayer?.score || 0,
+                is_winner: dbPlayer?.is_winner || false,
+                joined_at: dbPlayer?.joined_at || '',
+                avatar_url: presence.avatar_url || dbPlayer?.avatar_url || '',
+                game_id: game.id,
+              });
+            });
+          });
+          
+          // Add any database players not in presence (offline players)
+          existingPlayers.forEach(dbPlayer => {
+            if (!presenceUserIds.has(dbPlayer.user_id)) {
+              console.log('👤 Adding offline player from DB:', dbPlayer.hoopname);
+              mergedPlayers.push({
+                ...dbPlayer,
+                id: dbPlayer.id, // Keep original database id
+              });
+            }
+          });
+          
+          console.log('📋 Final merged player list:', mergedPlayers);
+          if (mounted) setPlayers(mergedPlayers);
+        };
+        
+        // Track own presence
+        channel.subscribe(async (status: string) => {
+          console.log('📡 Channel subscription status:', status);
+          if (status === 'SUBSCRIBED') {
+            console.log('🎯 Tracking own presence...');
+            await channel.track({
+              user_id: user.id,
+              hoopname,
+              team: null,
+              avatar_url: user.user_metadata?.avatar_url || '',
+            });
+            console.log('✅ Own presence tracked');
+            
+            // Fallback: if presence is empty after a delay, use database players
+            setTimeout(() => {
+              if (mounted) {
+                const presenceState = channel.presenceState();
+                const presencePlayers = Object.values(presenceState).flat();
+                console.log('⏰ Fallback check - Presence players:', presencePlayers.length, 'DB players:', existingPlayersRef.current.length);
+                
+                if (presencePlayers.length === 0 && existingPlayersRef.current.length > 0) {
+                  console.log('🔄 Using database players as fallback');
+                  setPlayers(existingPlayersRef.current);
+                }
+              }
+            }, 2000); // 2 second delay
+          }
+        });
+        
+        presenceChannelRef.current = channel;
+        console.log('✅ Lobby setup complete');
+        
+        // Set up periodic refresh of database players
+        const refreshInterval = setInterval(async () => {
+          if (mounted) {
+            try {
+              console.log('🔄 Periodic refresh of database players...');
+              // Try to get the latest game info to check if it still exists
+              let refreshedPlayers;
+              try {
+                const refreshedGame = await gameService.getGameByCode(game_code);
+                if (!refreshedGame) throw new Error('Game not found');
+                if (mounted) setHostId(refreshedGame.host_id);
+                refreshedPlayers = await gameService.getPlayersForGame(refreshedGame.id);
+                existingPlayersRef.current = refreshedPlayers || [];
+                console.log('📋 Refreshed DB players:', refreshedPlayers);
+                // Update the player list with fresh data
+                if (presenceChannelRef.current) {
+                  updatePlayerListFromPresence(presenceChannelRef.current, refreshedPlayers || []);
+                }
+              } catch (err: any) {
+                // If the game is not found, clean up and exit lobby silently
+                const isNotFound = (err && err.message && (err.message.includes('Failed to fetch game') || err.message.includes('Game not found')));
+                if (isNotFound) {
+                  if (refreshIntervalRef.current) {
+                    clearInterval(refreshIntervalRef.current);
+                    refreshIntervalRef.current = null;
+                  }
+                  if (presenceChannelRef.current) {
+                    presenceChannelRef.current.unsubscribe();
+                    presenceChannelRef.current = null;
+                  }
+                  console.log('ℹ️ Game deleted or not found during refresh. Cleaning up and leaving lobby silently.');
+                  // Silently navigate out of the lobby
+                  if (router.canGoBack()) {
+                    router.back();
+                  } else {
+                    router.replace('/');
+                  }
+                  return;
+                } else {
+                  // Log other errors
+                  console.error('❌ Error refreshing players:', err);
+                }
+              }
+            } catch (error) {
+              console.error('❌ Error refreshing players:', error);
+            }
+          }
+        }, 5000); // Refresh every 5 seconds
+        
+        // Store the interval for cleanup
+        refreshIntervalRef.current = refreshInterval;
+        
+      } catch (error) {
+        console.error('❌ Error joining lobby:', error);
+      }
+    }
+    
+    fetchUserAndJoinPresence();
+    
+    return () => {
+      console.log('🧹 Cleaning up lobby...');
+      mounted = false;
+      if (presenceChannelRef.current) {
+        presenceChannelRef.current.unsubscribe();
+        presenceChannelRef.current = null;
+      }
+      // Clear the refresh interval
+      if (refreshIntervalRef.current) {
+        clearInterval(refreshIntervalRef.current);
+        refreshIntervalRef.current = null;
+      }
+    };
+  }, [game_code]);
+
+  // Debug log for current players state
+  useEffect(() => {
+    console.log('🎮 Current players state:', players);
+  }, [players]);
 
   return (
     <LinearGradient colors={['#1D1D1D', '#121212']} style={styles.container}>
