@@ -149,4 +149,23 @@ export const workoutService = {
     if (error && error.code !== 'PGRST116') throw error; // PGRST116 = no rows returned
     return data;
   },
+
+  // Record Complete Workout
+  async recordCompletedWorkout(userId: string, workoutId: string) {
+    const { error } = await supabase
+      .from('user_completed_workouts')
+      .insert([{ user_id: userId, workout_id: workoutId }]);
+    if (error) throw error;
+  },
+
+  // Fetch Completed Workouts
+  async fetchCompletedWorkouts(userId: string) {
+    const { data, error } = await supabase
+      .from('user_completed_workouts')
+      .select('id, completed_at, workout:workout_id(name)')
+      .eq('user_id', userId)
+      .order('completed_at', { ascending: false });
+    if (error) throw error;
+    return data;
+  },
 }; 

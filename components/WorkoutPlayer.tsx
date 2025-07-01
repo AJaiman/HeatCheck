@@ -2,12 +2,14 @@ import { Ionicons } from '@expo/vector-icons';
 import React, { useEffect, useState } from 'react';
 import { Alert, Modal, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import Animated, {
-    runOnJS,
-    useAnimatedProps,
-    useSharedValue,
-    withTiming
+  runOnJS,
+  useAnimatedProps,
+  useSharedValue,
+  withTiming
 } from 'react-native-reanimated';
 import Svg, { Circle } from 'react-native-svg';
+import { supabase } from '../lib/supabase';
+import { workoutService } from '../lib/workoutService';
 import { Drill as BaseDrill, WorkoutWithDrills } from '../types/workout';
 
 type Drill = BaseDrill & { order_index: number; rest_time_seconds: number };
@@ -175,7 +177,7 @@ export default function WorkoutPlayer({ visible, workout, onClose }: WorkoutPlay
 
   const renderContent = () => {
     if (isWorkoutComplete) {
-      return <CongratulationsView onClose={onClose} />;
+      return <CongratulationsView onClose={onClose} workout={workout} />;
     }
 
     if (currentDrillIndex === -1) {
@@ -221,15 +223,37 @@ export default function WorkoutPlayer({ visible, workout, onClose }: WorkoutPlay
   );
 }
 
-const CongratulationsView = ({ onClose }: { onClose: () => void }) => (
-  <View style={styles.content}>
-    <Text style={styles.congratsTitle}>Congratulations!</Text>
-    <Text style={styles.congratsSubtitle}>You've completed the workout.</Text>
-    <TouchableOpacity onPress={onClose} style={styles.returnButton}>
-      <Text style={styles.returnButtonText}>Return to HeatCheck</Text>
-    </TouchableOpacity>
-  </View>
-);
+const CongratulationsView = ({ onClose, workout }: { onClose: () => void, workout: WorkoutWithDrills }) => {
+  const [saving, setSaving] = useState(false);
+
+  const handleReturn = async () => {
+    setSaving(true);
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) throw new Error('User not authenticated');
+      await workoutService.recordCompletedWorkout(user.id, workout.id);
+    } catch (err: any) {
+      Alert.alert('Error', err.message || 'Failed to record completed workout.');
+    } finally {
+      setSaving(false);
+      onClose();
+    }
+  };
+
+  return (
+    <View style={styles.content}>
+      <Text style={styles.congratsTitle}>Congratulations!</Text>
+      <Text style={styles.congratsSubtitle}>You've completed the workout.</Text>
+      <TouchableOpacity onPress={handleReturn} style={styles.returnButton} disabled={saving}>
+        {saving ? (
+          <Text style={styles.returnButtonText}>Saving...</Text>
+        ) : (
+          <Text style={styles.returnButtonText}>Return to HeatCheck</Text>
+        )}
+      </TouchableOpacity>
+    </View>
+  );
+};
 
 const GetReadyView = ({ drill, onComplete, timerKey }: { drill: Drill, onComplete: () => void, timerKey: number }) => (
   <View style={styles.content}>

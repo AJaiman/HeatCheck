@@ -4,12 +4,15 @@ import { router } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { ActivityIndicator, Alert, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { supabase } from '../lib/supabase';
+import { workoutService } from '../lib/workoutService';
 
 export default function Profile() {
   const [activeTab, setActiveTab] = useState<'games' | 'workouts'>('games');
   const [hoopname, setHoopname] = useState<string | null>(null);
   const [elo, setElo] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
+  const [workoutsLoading, setWorkoutsLoading] = useState(false);
+  const [completedWorkouts, setCompletedWorkouts] = useState<any[]>([]);
 
   useEffect(() => {
     const fetchProfile = async () => {
@@ -29,6 +32,25 @@ export default function Profile() {
     fetchProfile();
   }, []);
 
+  useEffect(() => {
+    const fetchWorkouts = async () => {
+      setWorkoutsLoading(true);
+      const { data: { user } } = await supabase.auth.getUser();
+      if (user) {
+        try {
+          const workouts = await workoutService.fetchCompletedWorkouts(user.id);
+          setCompletedWorkouts(workouts || []);
+        } catch (err: any) {
+          Alert.alert('Error', err.message || 'Failed to fetch completed workouts.');
+        }
+      }
+      setWorkoutsLoading(false);
+    };
+    if (activeTab === 'workouts') {
+      fetchWorkouts();
+    }
+  }, [activeTab]);
+
   const handleLogout = async () => {
     try {
       const { error } = await supabase.auth.signOut();
@@ -46,7 +68,7 @@ export default function Profile() {
 
   // Placeholder data
   const winPercentage = 68;
-  const workoutsCompleted = 24;
+  const workoutsCompleted = completedWorkouts.length;
   
   const gameHistory = [
     { id: 1, gameMode: 'Classic', gameType: 'Ranked', result: 'W', eloChange: '+15', date: '2024-01-15' },
@@ -54,14 +76,6 @@ export default function Profile() {
     { id: 3, gameMode: 'King of the Court', gameType: 'Ranked', result: 'W', eloChange: '+12', date: '2024-01-10' },
     { id: 4, gameMode: 'Classic', gameType: 'Casual', result: 'W', eloChange: null, date: '2024-01-08' },
     { id: 5, gameMode: '21', gameType: 'Ranked', result: 'L', eloChange: '-5', date: '2024-01-05' },
-  ];
-
-  const workoutHistory = [
-    { id: 1, name: 'Shooting Drills', duration: '45 min', date: '2024-01-15' },
-    { id: 2, name: 'Dribbling Mastery', duration: '30 min', date: '2024-01-14' },
-    { id: 3, name: 'Defensive Training', duration: '60 min', date: '2024-01-12' },
-    { id: 4, name: 'Speed & Agility', duration: '40 min', date: '2024-01-10' },
-    { id: 5, name: 'Strength Building', duration: '50 min', date: '2024-01-08' },
   ];
 
   const StatCard = ({ title, value, subtitle, icon }: { title: string; value: string; subtitle: string; icon: keyof typeof Ionicons.glyphMap }) => (
@@ -104,11 +118,10 @@ export default function Profile() {
   const WorkoutHistoryItem = ({ workout }: { workout: any }) => (
     <View style={styles.historyItem}>
       <View style={styles.historyLeft}>
-        <Text style={styles.historyTitle}>{workout.name}</Text>
-        <Text style={styles.historyDate}>{workout.date}</Text>
+        <Text style={styles.historyTitle}>{workout.workout?.name || 'Workout'}</Text>
+        <Text style={styles.historyDate}>{workout.completed_at ? new Date(workout.completed_at).toLocaleDateString() : ''}</Text>
       </View>
       <View style={styles.historyRight}>
-        <Text style={styles.workoutDuration}>{workout.duration}</Text>
         <Ionicons name="checkmark-circle" size={20} color="#10B981" />
       </View>
     </View>
@@ -180,9 +193,15 @@ export default function Profile() {
               <GameHistoryItem key={game.id} game={game} />
             ))
           ) : (
-            workoutHistory.map(workout => (
-              <WorkoutHistoryItem key={workout.id} workout={workout} />
-            ))
+            workoutsLoading ? (
+              <ActivityIndicator size="small" color="#FF6B35" style={{ marginTop: 20 }} />
+            ) : completedWorkouts.length === 0 ? (
+              <Text style={{ color: '#888', textAlign: 'center', marginTop: 20 }}>No completed workouts yet.</Text>
+            ) : (
+              completedWorkouts.map(workout => (
+                <WorkoutHistoryItem key={workout.id} workout={workout} />
+              ))
+            )
           )}
         </View>
       </View>
