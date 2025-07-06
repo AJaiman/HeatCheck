@@ -2,7 +2,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useEffect, useRef, useState } from 'react';
-import { Alert, Clipboard, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Alert, Clipboard, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { gameService } from '../lib/gameService';
 import { supabase } from '../lib/supabase';
 import { GameMode, GamePlayer } from '../types/game';
@@ -21,11 +21,73 @@ export default function LobbyScreen() {
   const [currentHoopname, setCurrentHoopname] = useState<string>('');
   const [maxPlayersPerTeam, setMaxPlayersPerTeam] = useState<number>(5);
   const [hostId, setHostId] = useState<string | null>(host_id || null);
+  const [gameStatus, setGameStatus] = useState<string>('lobby');
   const presenceChannelRef = useRef<any>(null);
   const existingPlayersRef = useRef<GamePlayer[]>([]);
   const refreshIntervalRef = useRef<number | null>(null);
+  const mountedRef = useRef(true);
+  const teamAScoreRef = useRef<TextInput>(null);
+  const teamBScoreRef = useRef<TextInput>(null);
+  const playerScoreRefs = useRef<{ [userId: string]: TextInput | null }>({});
+  const [isStartingGame, setIsStartingGame] = useState(false);
+  const [gameStarting, setGameStarting] = useState(false);
+  const [isCancellingGame, setIsCancellingGame] = useState(false);
+  const [isSubmittingScores, setIsSubmittingScores] = useState(false);
+  const [teamAScore, setTeamAScore] = useState('');
+  const [teamBScore, setTeamBScore] = useState('');
+  const [playerScores, setPlayerScores] = useState<{ [userId: string]: string }>({});
 
   const isHost = currentUserId === hostId;
+
+  // Function to check if all score inputs are filled
+  const canSubmitScores = (): boolean => {
+    if (gameStatus !== 'in_progress') return false;
+    
+    switch (game_mode) {
+      case 'Classic':
+        // Both team scores must be filled
+        return teamAScore.trim() !== '' && teamBScore.trim() !== '';
+      
+      case '21':
+        // All active players must have scores
+        const activePlayers = players.slice(0, 4); // Max 4 players in 21
+        return activePlayers.every(player => {
+          const score = playerScores[player.user_id];
+          return score && score.trim() !== '';
+        });
+      
+      case 'King of the Court':
+        // No score inputs in KOTC mode
+        return false;
+      
+      default:
+        return false;
+    }
+  };
+
+  // Function to check if the game can start based on game mode and player count
+  const canStartGame = (): boolean => {
+    if (!players || players.length === 0) return false;
+    
+    switch (game_mode) {
+      case 'Classic':
+        // Both teams must be full (each team has maxPlayersPerTeam players)
+        const teamA = players.filter(p => p.team === 'Team A');
+        const teamB = players.filter(p => p.team === 'Team B');
+        return teamA.length >= maxPlayersPerTeam && teamB.length >= maxPlayersPerTeam;
+      
+      case '21':
+        // Need at least 3 players
+        return players.length >= 3;
+      
+      case 'King of the Court':
+        // Need at least 3 players (1 king, 1 challenger, 1 in queue)
+        return players.length >= 3;
+      
+      default:
+        return false;
+    }
+  };
 
   const handleLeave = async () => {
     Alert.alert('Leave Game', 'Are you sure you want to leave the lobby?', [
@@ -44,21 +106,44 @@ export default function LobbyScreen() {
           
           console.log('👤 Leaving user ID:', userId);
           
-          // Remove from presence channel first
-          if (presenceChannelRef.current) {
-            console.log('📡 Removing from presence channel...');
-            await presenceChannelRef.current.untrack();
-            presenceChannelRef.current.unsubscribe();
-            presenceChannelRef.current = null;
-            console.log('✅ Removed from presence channel');
-          }
-          
-          // Get the game ID and remove from database
+          // Get the game ID first
           const game = await gameService.getGameByCode(game_code);
           if (!game) throw new Error('Game not found');
-          console.log('🗄️ Removing from database...');
-          await gameService.leaveGame(game.id, userId);
-          console.log('✅ Removed from database');
+          
+          // Do database leave and presence cleanup in parallel for speed
+          const leavePromises = [];
+          
+          // Remove from database
+          leavePromises.push(
+            gameService.leaveGame(game.id, userId).then(() => {
+              console.log('✅ Removed from database');
+            }).catch((err: any) => {
+              console.error('❌ Database leave error:', err);
+              // Don't throw here, continue with presence cleanup
+            })
+          );
+          
+          // Remove from presence channel
+          if (presenceChannelRef.current) {
+            console.log('📡 Removing from presence channel...');
+                         leavePromises.push(
+               presenceChannelRef.current.untrack().then(() => {
+                 console.log('✅ Removed from presence tracking');
+               }).catch((err: any) => {
+                 console.error('❌ Presence untrack error:', err);
+               })
+             );
+          }
+          
+          // Wait for both operations to complete
+          await Promise.all(leavePromises);
+          
+          // Unsubscribe from channel after operations complete
+          if (presenceChannelRef.current) {
+            presenceChannelRef.current.unsubscribe();
+            presenceChannelRef.current = null;
+            console.log('✅ Unsubscribed from presence channel');
+          }
           
           router.back();
         } catch (err: any) {
@@ -117,12 +202,76 @@ export default function LobbyScreen() {
         <Text style={[styles.sectionHeader, { color: TEAM_A_COLOR }]}>TEAM A ({teamA.length}/{maxPlayersPerTeam})</Text>
         {teamA.map((p) => renderPlayerOrGhost(p, p.id, TEAM_A_COLOR))}
         {[...Array(Math.max(0, maxPlayersPerTeam - teamA.length))].map((_, i) => renderPlayerOrGhost(null, `A-${i}`, TEAM_A_COLOR))}
+        {isHost && gameStatus === 'in_progress' && (
+          <View style={styles.scoreInputRow}>
+            <Text style={styles.scoreInputLabel}>Team A Score:</Text>
+            <TextInput
+              ref={teamAScoreRef}
+              style={styles.scoreInput}
+              value={teamAScore}
+              onChangeText={(text) => {
+                // Only allow numeric input and limit to 3 digits
+                const numericText = text.replace(/[^0-9]/g, '');
+                if (numericText.length <= 3) {
+                  setTeamAScore(numericText);
+                }
+              }}
+              keyboardType="numeric"
+              placeholder="0"
+              blurOnSubmit={false}
+              returnKeyType="done"
+              enablesReturnKeyAutomatically={false}
+              selectTextOnFocus={true}
+              autoCorrect={false}
+              autoCapitalize="none"
+              spellCheck={false}
+              contextMenuHidden={true}
+              multiline={false}
+              onSubmitEditing={() => {
+                // Keep focus to prevent keypad dismissal
+                teamAScoreRef.current?.focus();
+              }}
+            />
+          </View>
+        )}
 
         <View style={styles.divider} />
 
         <Text style={[styles.sectionHeader, { color: TEAM_B_COLOR }]}>TEAM B ({teamB.length}/{maxPlayersPerTeam})</Text>
         {teamB.map((p) => renderPlayerOrGhost(p, p.id, TEAM_B_COLOR))}
         {[...Array(Math.max(0, maxPlayersPerTeam - teamB.length))].map((_, i) => renderPlayerOrGhost(null, `B-${i}`, TEAM_B_COLOR))}
+        {isHost && gameStatus === 'in_progress' && (
+          <View style={styles.scoreInputRow}>
+            <Text style={styles.scoreInputLabel}>Team B Score:</Text>
+            <TextInput
+              ref={teamBScoreRef}
+              style={styles.scoreInput}
+              value={teamBScore}
+              onChangeText={(text) => {
+                // Only allow numeric input and limit to 3 digits
+                const numericText = text.replace(/[^0-9]/g, '');
+                if (numericText.length <= 3) {
+                  setTeamBScore(numericText);
+                }
+              }}
+              keyboardType="numeric"
+              placeholder="0"
+              blurOnSubmit={false}
+              returnKeyType="done"
+              enablesReturnKeyAutomatically={false}
+              selectTextOnFocus={true}
+              autoCorrect={false}
+              autoCapitalize="none"
+              spellCheck={false}
+              contextMenuHidden={true}
+              multiline={false}
+              onSubmitEditing={() => {
+                // Keep focus to prevent keypad dismissal
+                teamBScoreRef.current?.focus();
+              }}
+            />
+          </View>
+        )}
       </>
     );
   };
@@ -133,7 +282,42 @@ export default function LobbyScreen() {
     return (
       <>
         <Text style={styles.sectionHeader}>PLAYERS ({players.length})</Text>
-        {players.slice(0, maxPlayers).map((p, i) => <PlayerCard key={p.id} player={p} rank={i+1} teamColor={PLAYER_COLORS[i % PLAYER_COLORS.length]} />)}
+        {players.slice(0, maxPlayers).map((p, i) => (
+          <View key={p.id} style={{ flexDirection: 'row', alignItems: 'center' }}>
+            <PlayerCard player={p} rank={i+1} teamColor={PLAYER_COLORS[i % PLAYER_COLORS.length]} />
+            {isHost && gameStatus === 'in_progress' && (
+              <TextInput
+                ref={(ref) => {
+                  playerScoreRefs.current[p.user_id] = ref;
+                }}
+                style={styles.scoreInputSmall}
+                value={playerScores[p.user_id] || ''}
+                onChangeText={(text) => {
+                  // Only allow numeric input and limit to 3 digits
+                  const numericText = text.replace(/[^0-9]/g, '');
+                  if (numericText.length <= 3) {
+                    setPlayerScores(prev => ({ ...prev, [p.user_id]: numericText }));
+                  }
+                }}
+                keyboardType="numeric"
+                placeholder="0"
+                blurOnSubmit={false}
+                returnKeyType="done"
+                enablesReturnKeyAutomatically={false}
+                selectTextOnFocus={true}
+                autoCorrect={false}
+                autoCapitalize="none"
+                spellCheck={false}
+                contextMenuHidden={true}
+                multiline={false}
+                onSubmitEditing={() => {
+                  // Keep focus to prevent keypad dismissal
+                  playerScoreRefs.current[p.user_id]?.focus();
+                }}
+              />
+            )}
+          </View>
+        ))}
         {[...Array(numGhosts)].map((_, i) => (
           <View key={`ghost-21-${i}`} style={[styles.playerCard, { borderLeftColor: PLAYER_COLORS[(players.length + i) % PLAYER_COLORS.length], borderLeftWidth: 4, opacity: 0.5 }]}> 
             <View style={styles.playerInfo}>
@@ -242,6 +426,7 @@ export default function LobbyScreen() {
         console.log('🎮 Game found:', game.id, 'Max players:', game.max_players_per_team);
         if (mounted) setMaxPlayersPerTeam(game.max_players_per_team || 5);
         if (mounted) setHostId(game.host_id);
+        if (mounted) setGameStatus(game.status || 'lobby');
         
         // Join the game in the database first
         try {
@@ -277,9 +462,166 @@ export default function LobbyScreen() {
           updatePlayerListFromPresence(channel, existingPlayersRef.current);
         });
         
-        channel.on('presence', { event: 'leave' }, ({ key, leftPresences }) => {
+        channel.on('presence', { event: 'leave' }, async ({ key, leftPresences }) => {
           console.log('➖ Player left presence:', key, leftPresences);
-          updatePlayerListFromPresence(channel, existingPlayersRef.current);
+          console.log('👤 Left presences details:', leftPresences);
+          
+          // Immediately remove the player from the current list for faster UI update
+          const leftUserId = key;
+          const currentPlayers = existingPlayersRef.current.filter(p => p.user_id !== leftUserId);
+          existingPlayersRef.current = currentPlayers;
+          
+          // Update UI immediately with the filtered list
+          if (mounted) {
+            setPlayers(currentPlayers);
+          }
+          
+          // Then refresh database data in the background to ensure consistency
+          try {
+            const refreshedGame = await gameService.getGameByCode(game_code);
+            if (refreshedGame && mounted) {
+              const refreshedPlayers = await gameService.getPlayersForGame(refreshedGame.id);
+              console.log('🔄 Refreshed players from DB after leave:', refreshedPlayers);
+              existingPlayersRef.current = refreshedPlayers || [];
+              setHostId(refreshedGame.host_id);
+              setGameStatus(refreshedGame.status || 'lobby');
+              
+              // Update UI with the final database state
+              updatePlayerListFromPresence(channel, refreshedPlayers || []);
+            }
+          } catch (error) {
+            console.log('⚠️ Error refreshing data on player leave:', error);
+            // If database refresh fails, still update with the filtered presence state
+            updatePlayerListFromPresence(channel, currentPlayers);
+          }
+        });
+        
+        // Listen for database changes to game_players and refresh player list
+        channel.on(
+          'postgres_changes',
+          { event: '*', schema: 'public', table: 'game_players', filter: `game_id=eq.${game.id}` },
+          async (payload) => {
+            console.log('🔔 Detected change in game_players:', payload);
+            
+            // For DELETE events, immediately update the UI
+            if (payload.eventType === 'DELETE' && payload.old && mounted) {
+              const deletedUserId = payload.old.user_id;
+              const currentPlayers = existingPlayersRef.current.filter(p => p.user_id !== deletedUserId);
+              existingPlayersRef.current = currentPlayers;
+              setPlayers(currentPlayers);
+              console.log('🗑️ Immediately removed player from UI:', deletedUserId);
+            }
+            
+            // Always fetch the latest game and players for consistency
+            try {
+              const refreshedGame = await gameService.getGameByCode(game_code);
+              if (refreshedGame && mounted) {
+                setHostId(refreshedGame.host_id);
+                setGameStatus(refreshedGame.status || 'lobby');
+                const refreshedPlayers = await gameService.getPlayersForGame(refreshedGame.id);
+                existingPlayersRef.current = refreshedPlayers || [];
+                if (presenceChannelRef.current) {
+                  updatePlayerListFromPresence(presenceChannelRef.current, refreshedPlayers || []);
+                }
+              }
+            } catch (error) {
+              console.log('⚠️ Error refreshing data on database change:', error);
+            }
+          }
+        );
+        
+        // Listen for database changes to games table for real-time game status updates
+        channel.on(
+          'postgres_changes',
+          { event: 'UPDATE', schema: 'public', table: 'games', filter: `id=eq.${game.id}` },
+          async (payload) => {
+            console.log('🎮 Detected change in games table:', payload);
+            
+            if (payload.new && mounted) {
+              const updatedGame = payload.new;
+              console.log('🔄 Game status updated:', updatedGame.status);
+              
+              // Update game status immediately
+              setGameStatus(updatedGame.status || 'lobby');
+              
+              // Update host ID if it changed
+              if (updatedGame.host_id) {
+                setHostId(updatedGame.host_id);
+              }
+              
+              // If game started, show notification to all players
+              if (updatedGame.status === 'in_progress') {
+                console.log('🎉 Game has started!');
+                setGameStarting(false); // Clear the starting state
+              }
+              
+              // If game cancelled/returned to lobby
+              if (updatedGame.status === 'lobby') {
+                console.log('🔄 Game returned to lobby!');
+                // Clear any entered scores
+                setTeamAScore('');
+                setTeamBScore('');
+                setPlayerScores({});
+              }
+            }
+          }
+        );
+        
+        // Alternative: Listen for any changes to the games table (more reliable)
+        channel.on(
+          'postgres_changes',
+          { event: 'UPDATE', schema: 'public', table: 'games' },
+          async (payload) => {
+            console.log('🎮 Detected any change in games table:', payload);
+            
+            // Check if this is our game
+            if (payload.new && payload.new.game_code === game_code && mounted) {
+              const updatedGame = payload.new;
+              console.log('🔄 Our game status updated:', updatedGame.status);
+              
+              setGameStatus(updatedGame.status || 'lobby');
+              if (updatedGame.host_id) {
+                setHostId(updatedGame.host_id);
+              }
+              
+              if (updatedGame.status === 'in_progress') {
+                console.log('🎉 Our game has started!');
+                setGameStarting(false);
+              }
+              
+              // If game cancelled/returned to lobby
+              if (updatedGame.status === 'lobby') {
+                console.log('🔄 Our game returned to lobby!');
+                // Clear any entered scores
+                setTeamAScore('');
+                setTeamBScore('');
+                setPlayerScores({});
+              }
+            }
+          }
+        );
+        
+        // Listen for broadcast messages (fallback for real-time updates)
+        channel.on('broadcast', { event: 'game_started' }, (payload) => {
+          console.log('📡 Received game start broadcast:', payload);
+          if (mounted && payload.payload?.game_code === game_code) {
+            console.log('🎮 Updating game status from broadcast');
+            setGameStatus('in_progress');
+            setGameStarting(false);
+          }
+        });
+        
+        // Listen for game cancellation broadcast
+        channel.on('broadcast', { event: 'game_cancelled' }, (payload) => {
+          console.log('📡 Received game cancellation broadcast:', payload);
+          if (mounted && payload.payload?.game_code === game_code) {
+            console.log('🎮 Updating game status to lobby from broadcast');
+            setGameStatus('lobby');
+            // Clear any entered scores
+            setTeamAScore('');
+            setTeamBScore('');
+            setPlayerScores({});
+          }
         });
         
         // Helper function to update player list from presence
@@ -314,7 +656,8 @@ export default function LobbyScreen() {
             });
           });
           
-          // Add any database players not in presence (offline players)
+          // Only add database players not in presence if they're still in the database
+          // This prevents showing players who have left but haven't been removed from DB yet
           existingPlayers.forEach(dbPlayer => {
             if (!presenceUserIds.has(dbPlayer.user_id)) {
               console.log('👤 Adding offline player from DB:', dbPlayer.hoopname);
@@ -324,6 +667,9 @@ export default function LobbyScreen() {
               });
             }
           });
+          
+          // Sort players by joined_at to maintain consistent order
+          mergedPlayers.sort((a, b) => new Date(a.joined_at).getTime() - new Date(b.joined_at).getTime());
           
           console.log('📋 Final merged player list:', mergedPlayers);
           if (mounted) setPlayers(mergedPlayers);
@@ -341,77 +687,52 @@ export default function LobbyScreen() {
               avatar_url: user.user_metadata?.avatar_url || '',
             });
             console.log('✅ Own presence tracked');
-            
             // Fallback: if presence is empty after a delay, use database players
             setTimeout(() => {
               if (mounted) {
                 const presenceState = channel.presenceState();
                 const presencePlayers = Object.values(presenceState).flat();
                 console.log('⏰ Fallback check - Presence players:', presencePlayers.length, 'DB players:', existingPlayersRef.current.length);
-                
                 if (presencePlayers.length === 0 && existingPlayersRef.current.length > 0) {
                   console.log('🔄 Using database players as fallback');
                   setPlayers(existingPlayersRef.current);
                 }
               }
             }, 2000); // 2 second delay
+          } else if (status === 'CHANNEL_ERROR') {
+            console.error('❌ Supabase channel subscription error!');
           }
         });
         
         presenceChannelRef.current = channel;
         console.log('✅ Lobby setup complete');
         
-        // Set up periodic refresh of database players
-        const refreshInterval = setInterval(async () => {
-          if (mounted) {
+        // Periodic refresh as fallback (every 3 seconds)
+        refreshIntervalRef.current = setInterval(async () => {
+          if (mountedRef.current) {
             try {
-              console.log('🔄 Periodic refresh of database players...');
-              // Try to get the latest game info to check if it still exists
-              let refreshedPlayers;
-              try {
-                const refreshedGame = await gameService.getGameByCode(game_code);
-                if (!refreshedGame) throw new Error('Game not found');
-                if (mounted) setHostId(refreshedGame.host_id);
-                refreshedPlayers = await gameService.getPlayersForGame(refreshedGame.id);
-                existingPlayersRef.current = refreshedPlayers || [];
-                console.log('📋 Refreshed DB players:', refreshedPlayers);
-                // Update the player list with fresh data
-                if (presenceChannelRef.current) {
-                  updatePlayerListFromPresence(presenceChannelRef.current, refreshedPlayers || []);
-                }
-              } catch (err: any) {
-                // If the game is not found, clean up and exit lobby silently
-                const isNotFound = (err && err.message && (err.message.includes('Failed to fetch game') || err.message.includes('Game not found')));
-                if (isNotFound) {
-                  if (refreshIntervalRef.current) {
-                    clearInterval(refreshIntervalRef.current);
-                    refreshIntervalRef.current = null;
+              const refreshedGame = await gameService.getGameByCode(game_code);
+              if (refreshedGame) {
+                const currentStatus = refreshedGame.status || 'lobby';
+                if (currentStatus !== gameStatus) {
+                  console.log('🔄 Periodic refresh detected status change:', currentStatus);
+                  setGameStatus(currentStatus);
+                  setHostId(refreshedGame.host_id);
+                  if (currentStatus === 'in_progress') {
+                    setGameStarting(false);
+                  } else if (currentStatus === 'lobby') {
+                    // Clear any entered scores when returning to lobby
+                    setTeamAScore('');
+                    setTeamBScore('');
+                    setPlayerScores({});
                   }
-                  if (presenceChannelRef.current) {
-                    presenceChannelRef.current.unsubscribe();
-                    presenceChannelRef.current = null;
-                  }
-                  console.log('ℹ️ Game deleted or not found during refresh. Cleaning up and leaving lobby silently.');
-                  // Silently navigate out of the lobby
-                  if (router.canGoBack()) {
-                    router.back();
-                  } else {
-                    router.replace('/');
-                  }
-                  return;
-                } else {
-                  // Log other errors
-                  console.error('❌ Error refreshing players:', err);
                 }
               }
             } catch (error) {
-              console.error('❌ Error refreshing players:', error);
+              console.log('⚠️ Error in periodic refresh:', error);
             }
           }
-        }, 5000); // Refresh every 5 seconds
-        
-        // Store the interval for cleanup
-        refreshIntervalRef.current = refreshInterval;
+        }, 3000);
         
       } catch (error) {
         console.error('❌ Error joining lobby:', error);
@@ -423,11 +744,11 @@ export default function LobbyScreen() {
     return () => {
       console.log('🧹 Cleaning up lobby...');
       mounted = false;
+      mountedRef.current = false;
       if (presenceChannelRef.current) {
         presenceChannelRef.current.unsubscribe();
         presenceChannelRef.current = null;
       }
-      // Clear the refresh interval
       if (refreshIntervalRef.current) {
         clearInterval(refreshIntervalRef.current);
         refreshIntervalRef.current = null;
@@ -440,14 +761,165 @@ export default function LobbyScreen() {
     console.log('🎮 Current players state:', players);
   }, [players]);
 
+  // Submit Scores handler
+  const handleSubmitScores = async () => {
+    setIsSubmittingScores(true);
+    try {
+      console.log('📊 Submitting scores...');
+      
+      // Validate scores
+      if (!canSubmitScores()) {
+        throw new Error('Please fill in all score fields');
+      }
+      
+      // Process scores based on game mode
+      switch (game_mode) {
+        case 'Classic':
+          console.log('🏀 Classic mode scores - Team A:', teamAScore, 'Team B:', teamBScore);
+          // TODO: Add logic to save scores to database
+          break;
+        
+        case '21':
+          console.log('🏀 21 mode scores:', playerScores);
+          // TODO: Add logic to save scores to database
+          break;
+        
+        default:
+          throw new Error('Unsupported game mode for score submission');
+      }
+      
+      // Show success feedback
+      Alert.alert(
+        'Scores Submitted!', 
+        'Game results have been recorded successfully.',
+        [{ text: 'OK' }]
+      );
+      
+    } catch (err: any) {
+      console.error('❌ Error submitting scores:', err);
+      Alert.alert('Error', err.message || 'Failed to submit scores.');
+    } finally {
+      setIsSubmittingScores(false);
+    }
+  };
+
+  // Cancel Game handler
+  const handleCancelGame = async () => {
+    Alert.alert('Cancel Game', 'Are you sure you want to cancel the game and return to lobby?', [
+      { text: 'No', style: 'cancel' },
+      { text: 'Yes', style: 'destructive', onPress: async () => {
+        setIsCancellingGame(true);
+        try {
+          console.log('🚫 Cancelling game...');
+          
+          // Update game status in database
+          const { error } = await supabase
+            .from('games')
+            .update({ status: 'lobby' })
+            .eq('game_code', game_code);
+          
+          if (error) throw error;
+          
+          console.log('✅ Game status updated to lobby');
+          
+          // Immediately update local state for instant feedback
+          setGameStatus('lobby');
+          
+          // Clear any entered scores
+          setTeamAScore('');
+          setTeamBScore('');
+          setPlayerScores({});
+          
+          // Broadcast game cancellation to all players via presence channel
+          if (presenceChannelRef.current) {
+            await presenceChannelRef.current.send({
+              type: 'broadcast',
+              event: 'game_cancelled',
+              payload: { game_code, status: 'lobby' }
+            });
+            console.log('📡 Broadcasted game cancellation to all players');
+          }
+          
+        } catch (err: any) {
+          console.error('❌ Error cancelling game:', err);
+          Alert.alert('Error', err.message || 'Failed to cancel game.');
+        } finally {
+          setIsCancellingGame(false);
+        }
+      } },
+    ]);
+  };
+
+  // Start Game handler
+  const handleStartGame = async () => {
+    setIsStartingGame(true);
+    setGameStarting(true);
+    try {
+      console.log('🚀 Starting game...');
+      
+      // Update game status in database
+      const { error } = await supabase
+        .from('games')
+        .update({ status: 'in_progress' })
+        .eq('game_code', game_code);
+      
+      if (error) throw error;
+      
+      console.log('✅ Game status updated to in_progress');
+      
+      // Immediately update local state for instant feedback
+      setGameStatus('in_progress');
+      
+      // Broadcast game start to all players via presence channel
+      if (presenceChannelRef.current) {
+        await presenceChannelRef.current.send({
+          type: 'broadcast',
+          event: 'game_started',
+          payload: { game_code, status: 'in_progress' }
+        });
+        console.log('📡 Broadcasted game start to all players');
+      }
+      
+    } catch (err: any) {
+      console.error('❌ Error starting game:', err);
+      Alert.alert('Error', err.message || 'Failed to start game.');
+    } finally {
+      setIsStartingGame(false);
+      setGameStarting(false);
+    }
+  };
+
   return (
     <LinearGradient colors={['#1D1D1D', '#121212']} style={styles.container}>
       <Stack.Screen options={{ headerShown: false, presentation: 'modal' }} />
       <View style={styles.header}>
         <Text style={styles.gameModeText}>{game_mode}</Text>
-        <TouchableOpacity onPress={handleLeave} style={styles.leaveButton}>
-          <Ionicons name="log-out-outline" size={32} color="#FF4444" />
-        </TouchableOpacity>
+        {gameStatus === 'in_progress' && (
+          <View style={styles.inProgressBubble}>
+            <Text style={styles.inProgressText}>In Progress</Text>
+          </View>
+        )}
+        {gameStarting && (
+          <View style={styles.startingBubble}>
+            <Text style={styles.startingText}>Starting...</Text>
+          </View>
+        )}
+        {/* Show Leave Game button only if in lobby, or Cancel Game for host if in progress */}
+        {gameStatus === 'lobby' ? (
+          <TouchableOpacity onPress={handleLeave} style={styles.leaveButton}>
+            <Ionicons name="log-out-outline" size={32} color="#FF4444" />
+          </TouchableOpacity>
+        ) : (
+          isHost && (
+            <TouchableOpacity onPress={handleCancelGame} style={styles.leaveButton} disabled={isCancellingGame}>
+              <Ionicons 
+                name="close-circle-outline" 
+                size={32} 
+                color={isCancellingGame ? "#666666" : "#FF4444"} 
+              />
+            </TouchableOpacity>
+          )
+        )}
       </View>
 
       <View style={styles.gameCodeContainer}>
@@ -466,13 +938,82 @@ export default function LobbyScreen() {
         {game_mode === 'King of the Court' && <KOTCView />}
       </ScrollView>
 
-      {isHost && (
-        <TouchableOpacity style={styles.startButton}>
-            <LinearGradient colors={['#FF8C66', '#FF6B35']} style={styles.startButtonGradient}>
-                <Text style={styles.startButtonText}>Start Game</Text>
-                <Ionicons name="rocket-outline" size={20} color="#FFFFFF" />
+      {isHost && gameStatus === 'lobby' && (
+        <View style={styles.startButtonContainer}>
+          {!canStartGame() && (
+            <Text style={styles.startButtonHint}>
+              {game_mode === 'Classic' 
+                ? `Need ${maxPlayersPerTeam} players on each team`
+                : game_mode === '21' 
+                ? 'Need at least 3 players'
+                : 'Need at least 3 players (1 king, 1 challenger, 1 in queue)'
+              }
+            </Text>
+          )}
+          <TouchableOpacity 
+            style={[
+              styles.startButton, 
+              (!canStartGame() || isStartingGame) && styles.startButtonDisabled
+            ]} 
+            onPress={handleStartGame} 
+            disabled={!canStartGame() || isStartingGame}
+          >
+            <LinearGradient 
+              colors={(!canStartGame() || isStartingGame) ? ['#666666', '#444444'] : ['#FF8C66', '#FF6B35']} 
+              style={styles.startButtonGradient}
+            >
+              <Text style={[
+                styles.startButtonText,
+                (!canStartGame() || isStartingGame) && styles.startButtonTextDisabled
+              ]}>
+                {isStartingGame ? 'Starting...' : 'Start Game'}
+              </Text>
+              <Ionicons 
+                name="rocket-outline" 
+                size={20} 
+                color={(!canStartGame() || isStartingGame) ? "#999999" : "#FFFFFF"} 
+              />
             </LinearGradient>
-        </TouchableOpacity>
+          </TouchableOpacity>
+        </View>
+      )}
+
+      {isHost && gameStatus === 'in_progress' && (game_mode === 'Classic' || game_mode === '21') && (
+        <View style={styles.startButtonContainer}>
+          {!canSubmitScores() && (
+            <Text style={styles.startButtonHint}>
+              {game_mode === 'Classic' 
+                ? 'Fill in both team scores'
+                : 'Fill in all player scores'
+              }
+            </Text>
+          )}
+          <TouchableOpacity 
+            style={[
+              styles.startButton, 
+              (!canSubmitScores() || isSubmittingScores) && styles.startButtonDisabled
+            ]} 
+            onPress={handleSubmitScores} 
+            disabled={!canSubmitScores() || isSubmittingScores}
+          >
+            <LinearGradient 
+              colors={(!canSubmitScores() || isSubmittingScores) ? ['#666666', '#444444'] : ['#FF8C66', '#FF6B35']} 
+              style={styles.startButtonGradient}
+            >
+              <Text style={[
+                styles.startButtonText,
+                (!canSubmitScores() || isSubmittingScores) && styles.startButtonTextDisabled
+              ]}>
+                {isSubmittingScores ? 'Submitting...' : 'Submit Scores'}
+              </Text>
+              <Ionicons 
+                name="checkmark-circle-outline" 
+                size={20} 
+                color={(!canSubmitScores() || isSubmittingScores) ? "#999999" : "#FFFFFF"} 
+              />
+            </LinearGradient>
+          </TouchableOpacity>
+        </View>
       )}
     </LinearGradient>
   );
@@ -599,16 +1140,30 @@ const styles = StyleSheet.create({
         justifyContent: 'center',
         marginVertical: -5,
     },
-    startButton: {
+    startButtonContainer: {
         position: 'absolute',
         bottom: 40,
         left: 20,
         right: 20,
+    },
+    startButton: {
         shadowColor: '#FF6B35',
         shadowOffset: { width: 0, height: 4 },
         shadowOpacity: 0.5,
         shadowRadius: 15,
         elevation: 10,
+    },
+    startButtonDisabled: {
+        shadowColor: '#666666',
+        shadowOpacity: 0.3,
+    },
+    startButtonHint: {
+        color: '#FF6B35',
+        fontSize: 14,
+        fontWeight: '600',
+        textAlign: 'center',
+        marginBottom: 8,
+        paddingHorizontal: 20,
     },
     startButtonGradient: {
         borderRadius: 16,
@@ -622,5 +1177,84 @@ const styles = StyleSheet.create({
         color: '#FFFFFF',
         fontWeight: 'bold',
         marginRight: 10,
+    },
+    startButtonTextDisabled: {
+        color: '#999999',
+    },
+    inProgressBubble: {
+        backgroundColor: '#FF6B35',
+        borderRadius: 12,
+        paddingHorizontal: 14,
+        paddingVertical: 4,
+        alignSelf: 'flex-start',
+        marginLeft: 12,
+    },
+    inProgressText: {
+        color: '#FFF',
+        fontWeight: 'bold',
+        fontSize: 14,
+        letterSpacing: 1,
+    },
+    startingBubble: {
+        backgroundColor: '#FFD700',
+        borderRadius: 12,
+        paddingHorizontal: 14,
+        paddingVertical: 4,
+        alignSelf: 'flex-start',
+        marginLeft: 12,
+    },
+    startingText: {
+        color: '#000',
+        fontWeight: 'bold',
+        fontSize: 14,
+        letterSpacing: 1,
+    },
+    scoreInputRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        marginTop: 8,
+        marginBottom: 8,
+        marginLeft: 20,
+    },
+    scoreInputLabel: {
+        color: '#FFF',
+        fontSize: 16,
+        marginRight: 10,
+        fontWeight: '600',
+    },
+    scoreInput: {
+        backgroundColor: 'linear-gradient(90deg, #FF8C66 0%, #FF6B35 100%)',
+        color: '#FFF',
+        borderRadius: 16,
+        paddingHorizontal: 18,
+        paddingVertical: 10,
+        fontSize: 22,
+        width: 70,
+        borderWidth: 2,
+        borderColor: '#FF6B35',
+        shadowColor: '#FF6B35',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.15,
+        shadowRadius: 6,
+        elevation: 4,
+        marginHorizontal: 4,
+    },
+    scoreInputSmall: {
+        backgroundColor: 'linear-gradient(90deg, #FF8C66 0%, #FF6B35 100%)',
+        color: '#FFF',
+        borderRadius: 14,
+        paddingHorizontal: 12,
+        paddingVertical: 7,
+        fontSize: 18,
+        width: 54,
+        borderWidth: 2,
+        borderColor: '#FF6B35',
+        shadowColor: '#FF6B35',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.15,
+        shadowRadius: 6,
+        elevation: 4,
+        marginLeft: 10,
+        marginHorizontal: 2,
     },
 }); 
