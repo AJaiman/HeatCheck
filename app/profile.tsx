@@ -224,7 +224,11 @@ export default function Profile() {
         </View>
 
         {/* History List */}
-        <View style={styles.historyList}>
+        <ScrollView 
+          style={styles.historyList}
+          showsVerticalScrollIndicator={false}
+          nestedScrollEnabled={true}
+        >
           {activeTab === 'games' ? (
             gamesLoading ? (
               <ActivityIndicator size="small" color="#FF6B35" style={{ marginTop: 20 }} />
@@ -246,7 +250,7 @@ export default function Profile() {
               ))
             )
           )}
-        </View>
+        </ScrollView>
       </View>
 
       {/* Logout Button */}
@@ -380,7 +384,8 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
   },
   historyList: {
-    gap: 8,
+    maxHeight: 400,
+    paddingBottom: 8,
   },
   historyItem: {
     backgroundColor: '#2C2C2C',
@@ -389,6 +394,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
+    marginBottom: 16,
   },
   historyLeft: {
     flex: 1,
