@@ -990,7 +990,8 @@ export default function LobbyScreen() {
             elo_before: u.eloBefore,
             elo_after: u.eloAfter,
             score: u.score,
-            is_winner: u.isWinnerValue
+            is_winner: u.isWinnerValue,
+            completed_at: new Date().toISOString()
           })
           .eq('game_id', gameId)
           .eq('user_id', u.userId)

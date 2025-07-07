@@ -45,10 +45,11 @@ export default function Profile() {
               elo_before,
               elo_after,
               game_id,
+              completed_at,
               games(game_code, game_mode, game_type, status)
             `)
             .eq('user_id', user.id)
-            .order('id', { ascending: false });
+            .order('completed_at', { ascending: false });
           if (error) {
             Alert.alert('Error', error.message || 'Failed to fetch game history.');
           } else if (isActive) {
@@ -61,7 +62,7 @@ export default function Profile() {
               eloChange: (g.games?.game_type === 'Ranked' && typeof g.elo_before === 'number' && typeof g.elo_after === 'number')
                 ? (g.elo_after - g.elo_before === 0 ? null : (g.elo_after - g.elo_before > 0 ? `+${g.elo_after - g.elo_before}` : `${g.elo_after - g.elo_before}`))
                 : null,
-              // No date field since created_at does not exist
+              date: g.completed_at ? new Date(g.completed_at).toLocaleDateString() : '',
             }));
             setGameHistory(mapped);
           }
@@ -132,7 +133,7 @@ export default function Profile() {
             <Text style={styles.gameTypeText}>{game.gameType}</Text>
           </View>
         </View>
-        {/* Remove date display since there is no date */}
+        <Text style={styles.historyDate}>{game.date}</Text>
       </View>
       <View style={styles.historyRight}>
         <View style={[styles.resultBadge, game.result === 'W' ? styles.winBadge : (game.result === 'L' ? styles.lossBadge : styles.tieBadge)]}>
