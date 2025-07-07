@@ -15,6 +15,7 @@ export default function Profile() {
   const [completedWorkouts, setCompletedWorkouts] = useState<any[]>([]);
   const [gameHistory, setGameHistory] = useState<any[]>([]);
   const [gamesLoading, setGamesLoading] = useState(false);
+  const [winRate, setWinRate] = useState<number>(0);
 
   // Fetch profile and game history on mount and when focused
   useFocusEffect(
@@ -23,6 +24,7 @@ export default function Profile() {
       const fetchProfileAndGames = async () => {
         setLoading(true);
         setGamesLoading(true);
+        setWorkoutsLoading(true);
         const { data: { user } } = await supabase.auth.getUser();
         if (user) {
           // Fetch profile
@@ -35,6 +37,7 @@ export default function Profile() {
             setHoopname(profile?.hoopname || '');
             setElo(typeof profile?.elo === 'number' ? profile.elo : null);
           }
+          
           // Fetch game history
           const { data: games, error } = await supabase
             .from('game_players')
@@ -65,10 +68,31 @@ export default function Profile() {
               date: g.completed_at ? new Date(g.completed_at).toLocaleDateString() : '',
             }));
             setGameHistory(mapped);
+            
+            // Calculate win rate from Classic games only
+            const classicGames = mapped.filter(game => game.gameMode === 'Classic');
+            if (classicGames.length > 0) {
+              const wins = classicGames.filter(game => game.result === 'W').length;
+              const winRatePercentage = Math.round((wins / classicGames.length) * 100);
+              setWinRate(winRatePercentage);
+            } else {
+              setWinRate(0);
+            }
+          }
+          
+          // Fetch workouts
+          try {
+            const workouts = await workoutService.fetchCompletedWorkouts(user.id);
+            if (isActive) {
+              setCompletedWorkouts(workouts || []);
+            }
+          } catch (err: any) {
+            Alert.alert('Error', err.message || 'Failed to fetch completed workouts.');
           }
         }
         setLoading(false);
         setGamesLoading(false);
+        setWorkoutsLoading(false);
       };
       fetchProfileAndGames();
       return () => { isActive = false; };
@@ -110,7 +134,6 @@ export default function Profile() {
   };
 
   // Placeholder data
-  const winPercentage = 68;
   const workoutsCompleted = completedWorkouts.length;
   
   const StatCard = ({ title, value, subtitle, icon }: { title: string; value: string; subtitle: string; icon: keyof typeof Ionicons.glyphMap }) => (
@@ -192,7 +215,7 @@ export default function Profile() {
       <View style={styles.statsContainer}>
         <StatCard 
           title="Win Rate" 
-          value={`${winPercentage}%`} 
+          value={`${winRate}%`} 
           subtitle="Last 30 days"
           icon="trophy-outline"
         />
