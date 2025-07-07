@@ -39,6 +39,24 @@ export default function LobbyScreen() {
 
   const isHost = currentUserId === hostId;
 
+  // Network error handler
+  const handleNetworkError = (error: any, context: string) => {
+    console.error(`❌ Network error in ${context}:`, error);
+    Alert.alert(
+      'Connection Error',
+      'Please check your internet connection and try again.',
+      [
+        {
+          text: 'OK',
+          onPress: () => {
+            // Navigate back to main app
+            router.replace('/');
+          }
+        }
+      ]
+    );
+  };
+
   // Elo calculation function
   const calculateElo = (playerElo: number, opponentElo: number, result: number, kFactor: number = 32): number => {
     // result: 1 for win, 0.5 for draw, 0 for loss
@@ -493,6 +511,9 @@ export default function LobbyScreen() {
     async function fetchUserAndJoinPresence() {
       if (!game_code) return;
       
+      let game: any = null;
+      let hoopname = '';
+      
       try {
         console.log('🔄 Starting lobby setup for game:', game_code);
         
@@ -506,25 +527,35 @@ export default function LobbyScreen() {
         setCurrentUserId(user.id);
         
         // Fetch hoopname from profile
-        const { data: profile } = await supabase
-          .from('profiles')
-          .select('hoopname')
-          .eq('id', user.id)
-          .maybeSingle();
-        const hoopname = profile?.hoopname || user.user_metadata?.display_name || '';
-        console.log('🏷️ Hoopname:', hoopname);
-        setCurrentHoopname(hoopname);
-        
-        // Get game info
-        const game = await gameService.getGameByCode(game_code);
-        if (!game) {
-          console.log('❌ Game not found:', game_code);
+        try {
+          const { data: profile } = await supabase
+            .from('profiles')
+            .select('hoopname')
+            .eq('id', user.id)
+            .maybeSingle();
+          hoopname = profile?.hoopname || user.user_metadata?.display_name || '';
+          console.log('🏷️ Hoopname:', hoopname);
+          setCurrentHoopname(hoopname);
+        } catch (error) {
+          handleNetworkError(error, 'fetching profile');
           return;
         }
-        console.log('🎮 Game found:', game.id, 'Max players:', game.max_players_per_team);
-        if (mounted) setMaxPlayersPerTeam(game.max_players_per_team || 5);
-        if (mounted) setHostId(game.host_id);
-        if (mounted) setGameStatus(game.status || 'lobby');
+        
+        // Get game info
+        try {
+          game = await gameService.getGameByCode(game_code);
+          if (!game) {
+            console.log('❌ Game not found:', game_code);
+            return;
+          }
+          console.log('🎮 Game found:', game.id, 'Max players:', game.max_players_per_team);
+          if (mounted) setMaxPlayersPerTeam(game.max_players_per_team || 5);
+          if (mounted) setHostId(game.host_id);
+          if (mounted) setGameStatus(game.status || 'lobby');
+        } catch (error) {
+          handleNetworkError(error, 'fetching game');
+          return;
+        }
         
         // Join the game in the database first
         try {
@@ -535,10 +566,15 @@ export default function LobbyScreen() {
         }
         
         // Fetch existing players from database
-        const existingPlayers = await gameService.getPlayersForGame(game.id);
-        console.log('📋 Existing players from DB:', existingPlayers);
-        existingPlayersRef.current = existingPlayers || [];
-        if (mounted) setPlayers(existingPlayers || []);
+        try {
+          const existingPlayers = await gameService.getPlayersForGame(game.id);
+          console.log('📋 Existing players from DB:', existingPlayers);
+          existingPlayersRef.current = existingPlayers || [];
+          if (mounted) setPlayers(existingPlayers || []);
+        } catch (error) {
+          handleNetworkError(error, 'fetching players');
+          return;
+        }
         
         // Join presence channel
         const channelName = `lobby-presence-${game_code}`;
@@ -829,13 +865,18 @@ export default function LobbyScreen() {
           console.log('📡 Channel subscription status:', status);
           if (status === 'SUBSCRIBED') {
             console.log('🎯 Tracking own presence...');
-            await channel.track({
-              user_id: user.id,
-              hoopname,
-              team: null,
-              avatar_url: user.user_metadata?.avatar_url || '',
-            });
-            console.log('✅ Own presence tracked');
+            try {
+              await channel.track({
+                user_id: user.id,
+                hoopname: hoopname,
+                team: null,
+                avatar_url: user.user_metadata?.avatar_url || '',
+              });
+              console.log('✅ Own presence tracked');
+            } catch (error) {
+              handleNetworkError(error, 'tracking presence');
+              return;
+            }
             // Fallback: if presence is empty after a delay, use database players
             setTimeout(() => {
               if (mounted) {
@@ -850,6 +891,8 @@ export default function LobbyScreen() {
             }, 2000); // 2 second delay
           } else if (status === 'CHANNEL_ERROR') {
             console.error('❌ Supabase channel subscription error!');
+            handleNetworkError(new Error('Channel subscription failed'), 'channel subscription');
+            return;
           }
         });
         
@@ -1073,7 +1116,11 @@ export default function LobbyScreen() {
       );
     } catch (err: any) {
       console.error('❌ Error submitting scores:', err);
-      Alert.alert('Error', err.message || 'Failed to submit scores.');
+      if (err.message && (err.message.includes('network') || err.message.includes('connection') || err.message.includes('fetch'))) {
+        handleNetworkError(err, 'submitting scores');
+      } else {
+        Alert.alert('Error', err.message || 'Failed to submit scores.');
+      }
     } finally {
       setIsSubmittingScores(false);
     }
