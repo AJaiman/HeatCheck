@@ -57,8 +57,8 @@ export default function Profile() {
               id: g.id,
               gameMode: g.games?.game_mode || '',
               gameType: g.games?.game_type || '',
-              result: g.is_winner === true ? 'W' : (g.is_winner === false ? 'L' : '-'),
-              eloChange: (typeof g.elo_before === 'number' && typeof g.elo_after === 'number')
+              result: g.tie ? 'T' : (g.is_winner === true ? 'W' : (g.is_winner === false ? 'L' : 'T')),
+              eloChange: (g.games?.game_type === 'Ranked' && typeof g.elo_before === 'number' && typeof g.elo_after === 'number')
                 ? (g.elo_after - g.elo_before === 0 ? null : (g.elo_after - g.elo_before > 0 ? `+${g.elo_after - g.elo_before}` : `${g.elo_after - g.elo_before}`))
                 : null,
               // No date field since created_at does not exist
@@ -135,15 +135,18 @@ export default function Profile() {
         {/* Remove date display since there is no date */}
       </View>
       <View style={styles.historyRight}>
-        <View style={[styles.resultBadge, game.result === 'W' ? styles.winBadge : styles.lossBadge]}>
+        <View style={[styles.resultBadge, game.result === 'W' ? styles.winBadge : (game.result === 'L' ? styles.lossBadge : styles.tieBadge)]}>
           <Text style={styles.resultText}>{game.result}</Text>
         </View>
-        {game.eloChange ? (
-          <Text style={[styles.eloChange, game.eloChange.startsWith('+') ? styles.positiveElo : styles.negativeElo]}>
-            {game.eloChange}
-          </Text>
-        ) : (
-          <Text style={styles.noEloChange}>No change</Text>
+        {/* Only show eloChange for ranked games, nothing for casual */}
+        {game.gameType === 'Ranked' && (
+          game.eloChange ? (
+            <Text style={[styles.eloChange, game.eloChange.startsWith('+') ? styles.positiveElo : styles.negativeElo]}>
+              {game.eloChange}
+            </Text>
+          ) : (
+            <Text style={styles.noEloChange}>No change</Text>
+          )
         )}
       </View>
     </View>
@@ -481,5 +484,12 @@ const styles = StyleSheet.create({
   },
   casualBadge: {
     backgroundColor: '#888888',
+  },
+  tieBadge: {
+    backgroundColor: '#888',
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    marginRight: 8,
   },
 }); 

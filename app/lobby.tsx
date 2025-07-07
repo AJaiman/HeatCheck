@@ -723,24 +723,40 @@ export default function LobbyScreen() {
         });
         
         // Listen for game completion broadcast
-        channel.on('broadcast', { event: 'game_completed' }, (payload) => {
+        channel.on('broadcast', { event: 'game_completed' }, async (payload) => {
           console.log('📡 Received game completion broadcast:', payload);
           if (mounted && payload.payload?.game_code === game_code) {
             console.log('🎉 Game completed! Showing results...');
-            
+
+            // Fetch the game to get game_type
+            let gameType = null;
+            try {
+              const game = await gameService.getGameByCode(game_code);
+              gameType = game?.game_type;
+            } catch (e) {
+              console.error('Failed to fetch game for type in broadcast handler', e);
+            }
+
             // Show game completion results to all players
             const { elo_changes, game_mode, scores } = payload.payload;
-            const eloSummary = Object.entries(elo_changes as { [userId: string]: number })
-              .map(([userId, change]) => {
-                const player = players.find(p => p.user_id === userId);
-                const changeText = change > 0 ? `+${change}` : change.toString();
-                return `${player?.hoopname || 'Unknown'}: ${changeText}`;
-              })
-              .join('\n');
-            
+            let alertTitle = 'Game Completed!';
+            let alertMessage;
+            if (gameType === 'Ranked') {
+              const eloSummary = Object.entries(elo_changes as { [userId: string]: number })
+                .map(([userId, change]) => {
+                  const player = players.find(p => p.user_id === userId);
+                  const changeText = change > 0 ? `+${change}` : change.toString();
+                  return `${player?.hoopname || 'Unknown'}: ${changeText}`;
+                })
+                .join('\n');
+              alertMessage = `Final scores and Elo changes:\n\n${eloSummary}`;
+            } else {
+              alertMessage = 'Scores submitted!';
+            }
+
             Alert.alert(
-              'Game Completed!', 
-              `Final scores and Elo changes:\n\n${eloSummary}`,
+              alertTitle,
+              alertMessage,
               [{ 
                 text: 'OK', 
                 onPress: () => {
@@ -913,6 +929,7 @@ export default function LobbyScreen() {
       const game = await gameService.getGameByCode(game_code);
       if (!game) throw new Error('Game not found');
       const gameId = game.id;
+      const isRanked = game.game_type === 'Ranked';
 
       // Calculate Elo changes for all players
       console.log('🧮 Calculating Elo changes...');
@@ -936,27 +953,32 @@ export default function LobbyScreen() {
         const userId = player.user_id;
         const eloBefore = playerElos[userId] || 1200;
         const eloChange = eloChanges[userId] || 0;
-        const eloAfter = Math.max(eloBefore + eloChange, 100);
+        const eloAfter = isRanked ? Math.max(eloBefore + eloChange, 100) : eloBefore;
         let score = null;
         let isWinner = false;
+        let tie = false;
+        let isWinnerValue: boolean | null = false;
         if (game_mode === 'Classic') {
           score = player.team === 'Team A' ? parseInt(teamAScore) : parseInt(teamBScore);
           const teamAScoreValue = parseInt(teamAScore) || 0;
           const teamBScoreValue = parseInt(teamBScore) || 0;
-          if (teamAScoreValue > teamBScoreValue && player.team === 'Team A') isWinner = true;
-          if (teamBScoreValue > teamAScoreValue && player.team === 'Team B') isWinner = true;
-          if (teamAScoreValue === teamBScoreValue) isWinner = false;
+          if (teamAScoreValue > teamBScoreValue && player.team === 'Team A') { isWinner = true; isWinnerValue = true; }
+          else if (teamBScoreValue > teamAScoreValue && player.team === 'Team B') { isWinner = true; isWinnerValue = true; }
+          else if (teamAScoreValue === teamBScoreValue) { isWinner = false; tie = true; isWinnerValue = null; }
         } else if (game_mode === '21') {
           score = parseInt(playerScores[userId]) || 0;
           const maxScore = Math.max(...Object.values(playerScores).map(s => parseInt(s) || 0));
           isWinner = score === maxScore && maxScore > 0;
+          isWinnerValue = isWinner;
         }
         return {
           userId,
           eloBefore,
           eloAfter,
           score,
-          isWinner
+          isWinner,
+          tie,
+          isWinnerValue
         };
       });
 
@@ -968,7 +990,7 @@ export default function LobbyScreen() {
             elo_before: u.eloBefore,
             elo_after: u.eloAfter,
             score: u.score,
-            is_winner: u.isWinner
+            is_winner: u.isWinnerValue
           })
           .eq('game_id', gameId)
           .eq('user_id', u.userId)
@@ -979,19 +1001,21 @@ export default function LobbyScreen() {
         throw new Error('Failed to update some game player records');
       }
 
-      // Update Elo ratings in the database
-      console.log('💾 Updating Elo ratings in database...');
-      const eloUpdates = updates.map(u =>
-        supabase
-          .from('profiles')
-          .update({ elo: u.eloAfter })
-          .eq('id', u.userId)
-      );
-      const updateResults = await Promise.all(eloUpdates);
-      const updateErrors = updateResults.filter(result => result.error);
-      if (updateErrors.length > 0) {
-        console.error('❌ Errors updating Elo ratings:', updateErrors);
-        throw new Error('Failed to update some Elo ratings');
+      // Only update Elo ratings in the database if ranked
+      if (isRanked) {
+        console.log('💾 Updating Elo ratings in database...');
+        const eloUpdates = updates.map(u =>
+          supabase
+            .from('profiles')
+            .update({ elo: u.eloAfter })
+            .eq('id', u.userId)
+        );
+        const updateResults = await Promise.all(eloUpdates);
+        const updateErrors = updateResults.filter(result => result.error);
+        if (updateErrors.length > 0) {
+          console.error('❌ Errors updating Elo ratings:', updateErrors);
+          throw new Error('Failed to update some Elo ratings');
+        }
       }
 
       // Set game status to 'complete'
@@ -1019,18 +1043,25 @@ export default function LobbyScreen() {
       }
 
       // Show success feedback with Elo changes
-      const eloSummary = updates
-        .map(u => {
-          const player = players.find(p => p.user_id === u.userId);
-          const change = u.eloAfter - u.eloBefore;
-          const changeText = change > 0 ? `+${change}` : change.toString();
-          return `${player?.hoopname || 'Unknown'}: ${changeText}`;
-        })
-        .join('\n');
+      let alertTitle = 'Game Completed!';
+      let alertMessage;
+      if (isRanked) {
+        const eloSummary = updates
+          .map(u => {
+            const player = players.find(p => p.user_id === u.userId);
+            const change = u.eloAfter - u.eloBefore;
+            const changeText = change > 0 ? `+${change}` : change.toString();
+            return `${player?.hoopname || 'Unknown'}: ${changeText}`;
+          })
+          .join('\n');
+        alertMessage = `Scores submitted and Elo ratings updated:\n\n${eloSummary}`;
+      } else {
+        alertMessage = 'Scores submitted!';
+      }
 
       Alert.alert(
-        'Game Completed!',
-        `Scores submitted and Elo ratings updated:\n\n${eloSummary}`,
+        alertTitle,
+        alertMessage,
         [{
           text: 'OK',
           onPress: () => {
