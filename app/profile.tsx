@@ -1,7 +1,7 @@
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
-import { router } from 'expo-router';
-import { useEffect, useState } from 'react';
+import { router, useFocusEffect } from 'expo-router';
+import { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, Alert, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { supabase } from '../lib/supabase';
 import { workoutService } from '../lib/workoutService';
@@ -13,24 +13,66 @@ export default function Profile() {
   const [loading, setLoading] = useState(true);
   const [workoutsLoading, setWorkoutsLoading] = useState(false);
   const [completedWorkouts, setCompletedWorkouts] = useState<any[]>([]);
+  const [gameHistory, setGameHistory] = useState<any[]>([]);
+  const [gamesLoading, setGamesLoading] = useState(false);
 
-  useEffect(() => {
-    const fetchProfile = async () => {
-      setLoading(true);
-      const { data: { user } } = await supabase.auth.getUser();
-      if (user) {
-        const { data: profile } = await supabase
-          .from('profiles')
-          .select('hoopname, elo')
-          .eq('id', user.id)
-          .maybeSingle();
-        setHoopname(profile?.hoopname || '');
-        setElo(typeof profile?.elo === 'number' ? profile.elo : null);
-      }
-      setLoading(false);
-    };
-    fetchProfile();
-  }, []);
+  // Fetch profile and game history on mount and when focused
+  useFocusEffect(
+    useCallback(() => {
+      let isActive = true;
+      const fetchProfileAndGames = async () => {
+        setLoading(true);
+        setGamesLoading(true);
+        const { data: { user } } = await supabase.auth.getUser();
+        if (user) {
+          // Fetch profile
+          const { data: profile } = await supabase
+            .from('profiles')
+            .select('hoopname, elo')
+            .eq('id', user.id)
+            .maybeSingle();
+          if (isActive) {
+            setHoopname(profile?.hoopname || '');
+            setElo(typeof profile?.elo === 'number' ? profile.elo : null);
+          }
+          // Fetch game history
+          const { data: games, error } = await supabase
+            .from('game_players')
+            .select(`
+              id,
+              score,
+              is_winner,
+              elo_before,
+              elo_after,
+              game_id,
+              games(game_code, game_mode, game_type, status)
+            `)
+            .eq('user_id', user.id)
+            .order('id', { ascending: false });
+          if (error) {
+            Alert.alert('Error', error.message || 'Failed to fetch game history.');
+          } else if (isActive) {
+            // Map to UI format
+            const mapped = (games || []).map((g: any) => ({
+              id: g.id,
+              gameMode: g.games?.game_mode || '',
+              gameType: g.games?.game_type || '',
+              result: g.is_winner === true ? 'W' : (g.is_winner === false ? 'L' : '-'),
+              eloChange: (typeof g.elo_before === 'number' && typeof g.elo_after === 'number')
+                ? (g.elo_after - g.elo_before === 0 ? null : (g.elo_after - g.elo_before > 0 ? `+${g.elo_after - g.elo_before}` : `${g.elo_after - g.elo_before}`))
+                : null,
+              // No date field since created_at does not exist
+            }));
+            setGameHistory(mapped);
+          }
+        }
+        setLoading(false);
+        setGamesLoading(false);
+      };
+      fetchProfileAndGames();
+      return () => { isActive = false; };
+    }, [])
+  );
 
   useEffect(() => {
     const fetchWorkouts = async () => {
@@ -70,14 +112,6 @@ export default function Profile() {
   const winPercentage = 68;
   const workoutsCompleted = completedWorkouts.length;
   
-  const gameHistory = [
-    { id: 1, gameMode: 'Classic', gameType: 'Ranked', result: 'W', eloChange: '+15', date: '2024-01-15' },
-    { id: 2, gameMode: '21', gameType: 'Casual', result: 'L', eloChange: null, date: '2024-01-12' },
-    { id: 3, gameMode: 'King of the Court', gameType: 'Ranked', result: 'W', eloChange: '+12', date: '2024-01-10' },
-    { id: 4, gameMode: 'Classic', gameType: 'Casual', result: 'W', eloChange: null, date: '2024-01-08' },
-    { id: 5, gameMode: '21', gameType: 'Ranked', result: 'L', eloChange: '-5', date: '2024-01-05' },
-  ];
-
   const StatCard = ({ title, value, subtitle, icon }: { title: string; value: string; subtitle: string; icon: keyof typeof Ionicons.glyphMap }) => (
     <View style={styles.statCard}>
       <View style={styles.statHeader}>
@@ -98,7 +132,7 @@ export default function Profile() {
             <Text style={styles.gameTypeText}>{game.gameType}</Text>
           </View>
         </View>
-        <Text style={styles.historyDate}>{game.date}</Text>
+        {/* Remove date display since there is no date */}
       </View>
       <View style={styles.historyRight}>
         <View style={[styles.resultBadge, game.result === 'W' ? styles.winBadge : styles.lossBadge]}>
@@ -189,9 +223,15 @@ export default function Profile() {
         {/* History List */}
         <View style={styles.historyList}>
           {activeTab === 'games' ? (
-            gameHistory.map(game => (
-              <GameHistoryItem key={game.id} game={game} />
-            ))
+            gamesLoading ? (
+              <ActivityIndicator size="small" color="#FF6B35" style={{ marginTop: 20 }} />
+            ) : gameHistory.length === 0 ? (
+              <Text style={{ color: '#888', textAlign: 'center', marginTop: 20 }}>No games played yet.</Text>
+            ) : (
+              gameHistory.map(game => (
+                <GameHistoryItem key={game.id} game={game} />
+              ))
+            )
           ) : (
             workoutsLoading ? (
               <ActivityIndicator size="small" color="#FF6B35" style={{ marginTop: 20 }} />

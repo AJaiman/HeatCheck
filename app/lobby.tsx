@@ -39,6 +39,104 @@ export default function LobbyScreen() {
 
   const isHost = currentUserId === hostId;
 
+  // Elo calculation function
+  const calculateElo = (playerElo: number, opponentElo: number, result: number, kFactor: number = 32): number => {
+    // result: 1 for win, 0.5 for draw, 0 for loss
+    const expectedScore = 1 / (1 + Math.pow(10, (opponentElo - playerElo) / 400));
+    const newElo = Math.round(playerElo + kFactor * (result - expectedScore));
+    return Math.max(newElo, 100); // Minimum Elo of 100
+  };
+
+  // Function to calculate Elo changes for all players
+  const calculateEloChanges = async (): Promise<{ [userId: string]: number }> => {
+    const eloChanges: { [userId: string]: number } = {};
+    
+    // Get current Elo ratings for all players
+    const playerIds = players.map(p => p.user_id);
+    const { data: profiles, error } = await supabase
+      .from('profiles')
+      .select('id, elo')
+      .in('id', playerIds);
+    
+    if (error) throw error;
+    
+    const playerElos = profiles?.reduce((acc: any, profile: any) => {
+      acc[profile.id] = profile.elo || 1200; // Default Elo of 1200
+      return acc;
+    }, {}) || {};
+    
+    switch (game_mode) {
+      case 'Classic':
+        // Team-based Elo calculation
+        const teamAPlayers = players.filter(p => p.team === 'Team A');
+        const teamBPlayers = players.filter(p => p.team === 'Team B');
+        const teamAScoreValue = parseInt(teamAScore) || 0;
+        const teamBScoreValue = parseInt(teamBScore) || 0;
+        
+        // Calculate average Elo for each team
+        const teamAAvgElo = teamAPlayers.reduce((sum, p) => sum + playerElos[p.user_id], 0) / teamAPlayers.length;
+        const teamBAvgElo = teamBPlayers.reduce((sum, p) => sum + playerElos[p.user_id], 0) / teamBPlayers.length;
+        
+        // Determine winner (1 for Team A win, 0 for Team B win, 0.5 for draw)
+        let teamAResult = 0.5;
+        if (teamAScoreValue > teamBScoreValue) teamAResult = 1;
+        else if (teamAScoreValue < teamBScoreValue) teamAResult = 0;
+        
+        // Calculate Elo changes for each player
+        teamAPlayers.forEach(player => {
+          const currentElo = playerElos[player.user_id];
+          const newElo = calculateElo(currentElo, teamBAvgElo, teamAResult);
+          eloChanges[player.user_id] = newElo - currentElo;
+        });
+        
+        teamBPlayers.forEach(player => {
+          const currentElo = playerElos[player.user_id];
+          const newElo = calculateElo(currentElo, teamAAvgElo, 1 - teamAResult);
+          eloChanges[player.user_id] = newElo - currentElo;
+        });
+        break;
+        
+      case '21':
+        // Individual Elo calculation for 21 mode
+        const playerScoresArray = Object.entries(playerScores).map(([userId, score]) => ({
+          userId,
+          score: parseInt(score) || 0
+        })).sort((a, b) => b.score - a.score); // Sort by score descending
+        
+        // Calculate Elo changes based on final rankings
+        playerScoresArray.forEach((playerScore, index) => {
+          const player = players.find(p => p.user_id === playerScore.userId);
+          if (!player) return;
+          
+          const currentElo = playerElos[player.user_id];
+          let totalEloChange = 0;
+          
+          // Compare against all other players
+          playerScoresArray.forEach((otherScore, otherIndex) => {
+            if (playerScore.userId === otherScore.userId) return;
+            
+            const otherPlayer = players.find(p => p.user_id === otherScore.userId);
+            if (!otherPlayer) return;
+            
+            const otherElo = playerElos[otherPlayer.user_id];
+            const result = index < otherIndex ? 1 : 0; // Higher rank wins
+            const newElo = calculateElo(currentElo, otherElo, result, 16); // Lower K-factor for 21 mode
+            totalEloChange += newElo - currentElo;
+          });
+          
+          // Average the Elo change
+          const avgEloChange = totalEloChange / (playerScoresArray.length - 1);
+          eloChanges[player.user_id] = Math.round(avgEloChange);
+        });
+        break;
+        
+      default:
+        throw new Error('Unsupported game mode for Elo calculation');
+    }
+    
+    return eloChanges;
+  };
+
   // Function to check if all score inputs are filled
   const canSubmitScores = (): boolean => {
     if (gameStatus !== 'in_progress') return false;
@@ -624,6 +722,41 @@ export default function LobbyScreen() {
           }
         });
         
+        // Listen for game completion broadcast
+        channel.on('broadcast', { event: 'game_completed' }, (payload) => {
+          console.log('📡 Received game completion broadcast:', payload);
+          if (mounted && payload.payload?.game_code === game_code) {
+            console.log('🎉 Game completed! Showing results...');
+            
+            // Show game completion results to all players
+            const { elo_changes, game_mode, scores } = payload.payload;
+            const eloSummary = Object.entries(elo_changes as { [userId: string]: number })
+              .map(([userId, change]) => {
+                const player = players.find(p => p.user_id === userId);
+                const changeText = change > 0 ? `+${change}` : change.toString();
+                return `${player?.hoopname || 'Unknown'}: ${changeText}`;
+              })
+              .join('\n');
+            
+            Alert.alert(
+              'Game Completed!', 
+              `Final scores and Elo changes:\n\n${eloSummary}`,
+              [{ 
+                text: 'OK', 
+                onPress: () => {
+                  // Reload the profile page (navigate to /profile and force reload)
+                  router.replace('/profile?reload=1');
+                }
+              }]
+            );
+            // Unsubscribe from the Supabase live channel for the game
+            if (presenceChannelRef.current) {
+              presenceChannelRef.current.unsubscribe();
+              presenceChannelRef.current = null;
+            }
+          }
+        });
+        
         // Helper function to update player list from presence
         const updatePlayerListFromPresence = (channel: any, existingPlayers: GamePlayer[]) => {
           const state = channel.presenceState();
@@ -726,6 +859,12 @@ export default function LobbyScreen() {
                     setTeamBScore('');
                     setPlayerScores({});
                   }
+                  // If the game is complete, stop the periodic refresh
+                  if (currentStatus === 'complete' && refreshIntervalRef.current) {
+                    clearInterval(refreshIntervalRef.current);
+                    refreshIntervalRef.current = null;
+                    console.log('🛑 Stopped periodic refresh after game completion');
+                  }
                 }
               }
             } catch (error) {
@@ -766,35 +905,140 @@ export default function LobbyScreen() {
     setIsSubmittingScores(true);
     try {
       console.log('📊 Submitting scores...');
-      
-      // Validate scores
       if (!canSubmitScores()) {
         throw new Error('Please fill in all score fields');
       }
-      
-      // Process scores based on game mode
-      switch (game_mode) {
-        case 'Classic':
-          console.log('🏀 Classic mode scores - Team A:', teamAScore, 'Team B:', teamBScore);
-          // TODO: Add logic to save scores to database
-          break;
-        
-        case '21':
-          console.log('🏀 21 mode scores:', playerScores);
-          // TODO: Add logic to save scores to database
-          break;
-        
-        default:
-          throw new Error('Unsupported game mode for score submission');
-      }
-      
-      // Show success feedback
-      Alert.alert(
-        'Scores Submitted!', 
-        'Game results have been recorded successfully.',
-        [{ text: 'OK' }]
+
+      // Get the current game
+      const game = await gameService.getGameByCode(game_code);
+      if (!game) throw new Error('Game not found');
+      const gameId = game.id;
+
+      // Calculate Elo changes for all players
+      console.log('🧮 Calculating Elo changes...');
+      const eloChanges = await calculateEloChanges();
+      console.log('📈 Elo changes calculated:', eloChanges);
+
+      // Fetch current Elo ratings
+      const playerIds = players.map(p => p.user_id);
+      const { data: currentProfiles, error: fetchError } = await supabase
+        .from('profiles')
+        .select('id, elo')
+        .in('id', playerIds);
+      if (fetchError) throw new Error('Failed to fetch current Elo ratings');
+      const playerElos = currentProfiles?.reduce((acc: any, profile: any) => {
+        acc[profile.id] = profile.elo || 1200;
+        return acc;
+      }, {}) || {};
+
+      // Prepare per-player game data
+      const updates = players.map(player => {
+        const userId = player.user_id;
+        const eloBefore = playerElos[userId] || 1200;
+        const eloChange = eloChanges[userId] || 0;
+        const eloAfter = Math.max(eloBefore + eloChange, 100);
+        let score = null;
+        let isWinner = false;
+        if (game_mode === 'Classic') {
+          score = player.team === 'Team A' ? parseInt(teamAScore) : parseInt(teamBScore);
+          const teamAScoreValue = parseInt(teamAScore) || 0;
+          const teamBScoreValue = parseInt(teamBScore) || 0;
+          if (teamAScoreValue > teamBScoreValue && player.team === 'Team A') isWinner = true;
+          if (teamBScoreValue > teamAScoreValue && player.team === 'Team B') isWinner = true;
+          if (teamAScoreValue === teamBScoreValue) isWinner = false;
+        } else if (game_mode === '21') {
+          score = parseInt(playerScores[userId]) || 0;
+          const maxScore = Math.max(...Object.values(playerScores).map(s => parseInt(s) || 0));
+          isWinner = score === maxScore && maxScore > 0;
+        }
+        return {
+          userId,
+          eloBefore,
+          eloAfter,
+          score,
+          isWinner
+        };
+      });
+
+      // Update game_players table
+      const updateGamePlayersPromises = updates.map(u =>
+        supabase
+          .from('game_players')
+          .update({
+            elo_before: u.eloBefore,
+            elo_after: u.eloAfter,
+            score: u.score,
+            is_winner: u.isWinner
+          })
+          .eq('game_id', gameId)
+          .eq('user_id', u.userId)
       );
-      
+      const updateGamePlayersResults = await Promise.all(updateGamePlayersPromises);
+      const updateGamePlayersErrors = updateGamePlayersResults.filter(r => r.error);
+      if (updateGamePlayersErrors.length > 0) {
+        throw new Error('Failed to update some game player records');
+      }
+
+      // Update Elo ratings in the database
+      console.log('💾 Updating Elo ratings in database...');
+      const eloUpdates = updates.map(u =>
+        supabase
+          .from('profiles')
+          .update({ elo: u.eloAfter })
+          .eq('id', u.userId)
+      );
+      const updateResults = await Promise.all(eloUpdates);
+      const updateErrors = updateResults.filter(result => result.error);
+      if (updateErrors.length > 0) {
+        console.error('❌ Errors updating Elo ratings:', updateErrors);
+        throw new Error('Failed to update some Elo ratings');
+      }
+
+      // Set game status to 'complete'
+      await supabase
+        .from('games')
+        .update({ status: 'complete' })
+        .eq('id', gameId);
+
+      // Broadcast game completion to all players
+      if (presenceChannelRef.current) {
+        await presenceChannelRef.current.send({
+          type: 'broadcast',
+          event: 'game_completed',
+          payload: {
+            game_code,
+            elo_changes: eloChanges,
+            game_mode,
+            scores: game_mode === 'Classic' ? { teamA: teamAScore, teamB: teamBScore } : playerScores
+          }
+        });
+        console.log('📡 Broadcasted game completion to all players');
+        // Close the Supabase live channel for the game
+        presenceChannelRef.current.unsubscribe();
+        presenceChannelRef.current = null;
+      }
+
+      // Show success feedback with Elo changes
+      const eloSummary = updates
+        .map(u => {
+          const player = players.find(p => p.user_id === u.userId);
+          const change = u.eloAfter - u.eloBefore;
+          const changeText = change > 0 ? `+${change}` : change.toString();
+          return `${player?.hoopname || 'Unknown'}: ${changeText}`;
+        })
+        .join('\n');
+
+      Alert.alert(
+        'Game Completed!',
+        `Scores submitted and Elo ratings updated:\n\n${eloSummary}`,
+        [{
+          text: 'OK',
+          onPress: () => {
+            // Reload the profile page (navigate to /profile and force reload)
+            router.replace('/profile?reload=1');
+          }
+        }]
+      );
     } catch (err: any) {
       console.error('❌ Error submitting scores:', err);
       Alert.alert('Error', err.message || 'Failed to submit scores.');
