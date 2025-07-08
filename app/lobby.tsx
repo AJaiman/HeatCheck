@@ -395,12 +395,15 @@ export default function LobbyScreen() {
   const TwentyOneView = () => {
     const maxPlayers = 4;
     const numGhosts = Math.max(0, maxPlayers - players.length);
+    const showGhosts = gameStatus !== 'in_progress';
     return (
       <>
         <Text style={styles.sectionHeader}>PLAYERS ({players.length})</Text>
         {players.slice(0, maxPlayers).map((p, i) => (
           <View key={p.id} style={{ flexDirection: 'row', alignItems: 'center' }}>
-            <PlayerCard player={p} rank={i+1} teamColor={PLAYER_COLORS[i % PLAYER_COLORS.length]} />
+            <View style={{ flex: 1 }}>
+              <PlayerCard player={p} rank={i+1} teamColor={PLAYER_COLORS[i % PLAYER_COLORS.length]} />
+            </View>
             {isHost && gameStatus === 'in_progress' && (
               <TextInput
                 ref={(ref) => {
@@ -434,7 +437,7 @@ export default function LobbyScreen() {
             )}
           </View>
         ))}
-        {[...Array(numGhosts)].map((_, i) => (
+        {showGhosts && [...Array(numGhosts)].map((_, i) => (
           <View key={`ghost-21-${i}`} style={[styles.playerCard, { borderLeftColor: PLAYER_COLORS[(players.length + i) % PLAYER_COLORS.length], borderLeftWidth: 4, opacity: 0.5 }]}> 
             <View style={styles.playerInfo}>
               <LinearGradient colors={['#4A4A4A', '#2C2C2C']} style={styles.playerAvatar} />
