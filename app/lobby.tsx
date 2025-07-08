@@ -778,14 +778,15 @@ export default function LobbyScreen() {
             let alertTitle = 'Game Completed!';
             let alertMessage;
             if (gameType === 'Ranked') {
-              const eloSummary = Object.entries(elo_changes as { [userId: string]: number })
-                .map(([userId, change]) => {
-                  const player = players.find(p => p.user_id === userId);
-                  const changeText = change > 0 ? `+${change}` : change.toString();
-                  return `${player?.hoopname || 'Unknown'}: ${changeText}`;
-                })
-                .join('\n');
-              alertMessage = `Final scores and Elo changes:\n\n${eloSummary}`;
+              // Show only the current user's Elo change
+              const userId = currentUserId;
+              if (userId && elo_changes && userId in elo_changes) {
+                const change = elo_changes[userId];
+                const changeText = change > 0 ? `+${change}` : change.toString();
+                alertMessage = `Scores submitted and Elo rating updated:\n\nYour Elo: ${changeText}`;
+              } else {
+                alertMessage = 'Scores submitted and Elo ratings updated!';
+              }
             } else {
               alertMessage = 'Scores submitted!';
             }
@@ -1090,15 +1091,15 @@ export default function LobbyScreen() {
       let alertTitle = 'Game Completed!';
       let alertMessage;
       if (isRanked) {
-        const eloSummary = updates
-          .map(u => {
-            const player = players.find(p => p.user_id === u.userId);
-            const change = u.eloAfter - u.eloBefore;
-            const changeText = change > 0 ? `+${change}` : change.toString();
-            return `${player?.hoopname || 'Unknown'}: ${changeText}`;
-          })
-          .join('\n');
-        alertMessage = `Scores submitted and Elo ratings updated:\n\n${eloSummary}`;
+        // Find the current user's Elo change
+        const currentUserUpdate = updates.find(u => u.userId === currentUserId);
+        if (currentUserUpdate) {
+          const change = currentUserUpdate.eloAfter - currentUserUpdate.eloBefore;
+          const changeText = change > 0 ? `+${change}` : change.toString();
+          alertMessage = `Scores submitted and Elo rating updated:\n\nYour Elo: ${changeText}`;
+        } else {
+          alertMessage = 'Scores submitted and Elo ratings updated!';
+        }
       } else {
         alertMessage = 'Scores submitted!';
       }

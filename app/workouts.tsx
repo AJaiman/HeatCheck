@@ -108,7 +108,7 @@ export default function Workouts() {
       
       <View style={styles.workoutStats}>
         <Text style={styles.workoutStat}>⏱️ {workout.estimated_duration_minutes} min</Text>
-        <Text style={styles.workoutStat}>📊 {workout.difficulty_level}</Text>
+        <Text style={styles.workoutStat}>📊 {workout.difficulty_level.charAt(0).toUpperCase() + workout.difficulty_level.slice(1)}</Text>
         {workout.average_rating ? (
           <Text style={styles.workoutStat}>⭐ {workout.average_rating.toFixed(1)}</Text>
         ) : null}
@@ -280,7 +280,9 @@ function WorkoutDetailModal({
           </View>
           <View style={modalStyles.stat}>
             <Text style={modalStyles.statLabel}>Difficulty</Text>
-            <Text style={modalStyles.statValue}>{workout.difficulty_level}</Text>
+            <Text style={modalStyles.statValue}>
+              {workout.difficulty_level.charAt(0).toUpperCase() + workout.difficulty_level.slice(1)}
+            </Text>
           </View>
           <View style={modalStyles.stat}>
             <Text style={modalStyles.statLabel}>Drills</Text>
