@@ -36,6 +36,8 @@ export default function LobbyScreen() {
   const [teamAScore, setTeamAScore] = useState('');
   const [teamBScore, setTeamBScore] = useState('');
   const [playerScores, setPlayerScores] = useState<{ [userId: string]: string }>({});
+  const [kotcWinCounts, setKotcWinCounts] = useState<{ [userId: string]: number }>({});
+  const [gameId, setGameId] = useState<string | null>(null);
 
   const isHost = currentUserId === hostId;
 
@@ -459,6 +461,27 @@ export default function LobbyScreen() {
     const queue = players.slice(2, 2 + maxQueue);
     const numQueueGhosts = Math.max(0, maxQueue - queue.length);
 
+    // Host selects winner and advances queue
+    const handleSelectWinner = async (winnerIdx: 0 | 1) => {
+      if (!isHost || !gameId || !onCourt[0] || !onCourt[1]) return;
+      const king = onCourt[0];
+      const challenger = onCourt[1];
+      const winner = winnerIdx === 0 ? king : challenger;
+      const loser = winnerIdx === 0 ? challenger : king;
+      // Update win count
+      setKotcWinCounts(prev => ({ ...prev, [winner.user_id]: (prev[winner.user_id] || 0) + 1 }));
+      // Move winner to king, loser to back of queue, next challenger up
+      const newPlayers = [winner, ...queue, loser].filter(Boolean).slice(0, players.length);
+      // Update backend
+      try {
+        await gameService.updateOnCourtPlayers(gameId, newPlayers[0]?.user_id || null, newPlayers[1]?.user_id || null);
+      } catch (e) {
+        handleNetworkError(e, 'updating on-court players');
+      }
+      // Update local UI immediately for responsiveness
+      setPlayers(newPlayers);
+    };
+
     return (
       <>
         <Text style={styles.sectionHeader}>ON COURT</Text>
@@ -490,6 +513,18 @@ export default function LobbyScreen() {
                 <Text style={styles.playerText} numberOfLines={1}>Waiting for Challenger…</Text>
               </View>
             </View>
+          </View>
+        )}
+        {/* Winner selection buttons for host */}
+        {isHost && gameStatus === 'in_progress' && onCourt[0] && onCourt[1] && (
+          <View style={{ flexDirection: 'row', justifyContent: 'center', marginVertical: 12 }}>
+            <TouchableOpacity style={[styles.kotcWinnerButton, { backgroundColor: '#FF6B35' }]} onPress={() => handleSelectWinner(0)}>
+              <Text style={styles.kotcWinnerButtonText}>{onCourt[0].hoopname || 'King'}</Text>
+            </TouchableOpacity>
+            <Text style={{ alignSelf: 'center', color: '#fff', marginHorizontal: 10 }}>wins</Text>
+            <TouchableOpacity style={[styles.kotcWinnerButton, { backgroundColor: '#3B82F6' }]} onPress={() => handleSelectWinner(1)}>
+              <Text style={styles.kotcWinnerButtonText}>{onCourt[1].hoopname || 'Challenger'}</Text>
+            </TouchableOpacity>
           </View>
         )}
         {/* Queue */}
@@ -555,6 +590,7 @@ export default function LobbyScreen() {
           if (mounted) setMaxPlayersPerTeam(game.max_players_per_team || 5);
           if (mounted) setHostId(game.host_id);
           if (mounted) setGameStatus(game.status || 'lobby');
+          if (mounted) setGameId(game.id);
         } catch (error) {
           handleNetworkError(error, 'fetching game');
           return;
@@ -1216,11 +1252,181 @@ export default function LobbyScreen() {
     }
   };
 
+  // Elo calculation for KOTC
+  const calculateKOTCEloChanges = async () => {
+    // Get current Elo ratings for all players
+    const playerIds = players.map(p => p.user_id);
+    const { data: profiles, error } = await supabase
+      .from('profiles')
+      .select('id, elo')
+      .in('id', playerIds);
+    if (error) throw error;
+    const playerElos = profiles?.reduce((acc: any, profile: any) => {
+      acc[profile.id] = profile.elo || 1200;
+      return acc;
+    }, {}) || {};
+    // Sort players by win count (descending)
+    const winArray = players.map(p => ({ userId: p.user_id, wins: kotcWinCounts[p.user_id] || 0 }));
+    winArray.sort((a, b) => b.wins - a.wins);
+    // Elo changes based on ranking
+    const eloChanges: { [userId: string]: number } = {};
+    winArray.forEach((playerScore, index) => {
+      const player = players.find(p => p.user_id === playerScore.userId);
+      if (!player) return;
+      const currentElo = playerElos[player.user_id];
+      let totalEloChange = 0;
+      winArray.forEach((otherScore, otherIndex) => {
+        if (playerScore.userId === otherScore.userId) return;
+        const otherPlayer = players.find(p => p.user_id === otherScore.userId);
+        if (!otherPlayer) return;
+        const otherElo = playerElos[otherPlayer.user_id];
+        const result = index < otherIndex ? 1 : 0; // Higher rank wins
+        const newElo = calculateElo(currentElo, otherElo, result, 16);
+        totalEloChange += newElo - currentElo;
+      });
+      const avgEloChange = totalEloChange / (winArray.length - 1);
+      eloChanges[player.user_id] = Math.round(avgEloChange);
+    });
+    return eloChanges;
+  };
+
+  // End KOTC Session handler
+  const handleEndKOTCSession = async () => {
+    setIsSubmittingScores(true);
+    try {
+      if (!gameId) throw new Error('Game not found');
+      const game = await gameService.getGameByCode(game_code);
+      if (!game) throw new Error('Game not found');
+      const isRanked = game.game_type === 'Ranked';
+      // Calculate Elo changes for all players
+      let eloChanges: { [userId: string]: number } = {};
+      if (isRanked) {
+        eloChanges = await calculateKOTCEloChanges();
+      }
+      // Fetch current Elo ratings
+      const playerIds = players.map(p => p.user_id);
+      const { data: currentProfiles, error: fetchError } = await supabase
+        .from('profiles')
+        .select('id, elo')
+        .in('id', playerIds);
+      if (fetchError) throw new Error('Failed to fetch current Elo ratings');
+      const playerElos = currentProfiles?.reduce((acc: any, profile: any) => {
+        acc[profile.id] = profile.elo || 1200;
+        return acc;
+      }, {}) || {};
+      // Prepare per-player game data
+      const updates = players.map(player => {
+        const userId = player.user_id;
+        const eloBefore = playerElos[userId] || 1200;
+        const eloChange = eloChanges[userId] || 0;
+        const eloAfter = isRanked ? Math.max(eloBefore + eloChange, 100) : eloBefore;
+        const wins = kotcWinCounts[userId] || 0;
+        return {
+          userId,
+          eloBefore,
+          eloAfter,
+          score: wins,
+          isWinner: false, // Not used for KOTC
+          isWinnerValue: null
+        };
+      });
+      // Update game_players table
+      const updateGamePlayersPromises = updates.map(u =>
+        supabase
+          .from('game_players')
+          .update({
+            elo_before: u.eloBefore,
+            elo_after: u.eloAfter,
+            score: u.score,
+            is_winner: u.isWinnerValue,
+            completed_at: new Date().toISOString()
+          })
+          .eq('game_id', gameId)
+          .eq('user_id', u.userId)
+      );
+      const updateGamePlayersResults = await Promise.all(updateGamePlayersPromises);
+      const updateGamePlayersErrors = updateGamePlayersResults.filter(r => r.error);
+      if (updateGamePlayersErrors.length > 0) {
+        throw new Error('Failed to update some game player records');
+      }
+      // Only update Elo ratings in the database if ranked
+      if (isRanked) {
+        const eloUpdates = updates.map(u =>
+          supabase
+            .from('profiles')
+            .update({ elo: u.eloAfter })
+            .eq('id', u.userId)
+        );
+        const updateResults = await Promise.all(eloUpdates);
+        const updateErrors = updateResults.filter(result => result.error);
+        if (updateErrors.length > 0) {
+          throw new Error('Failed to update some Elo ratings');
+        }
+      }
+      // Set game status to 'complete'
+      await supabase
+        .from('games')
+        .update({ status: 'complete' })
+        .eq('id', gameId);
+      // Broadcast game completion to all players
+      if (presenceChannelRef.current) {
+        await presenceChannelRef.current.send({
+          type: 'broadcast',
+          event: 'game_completed',
+          payload: {
+            game_code,
+            elo_changes: eloChanges,
+            game_mode,
+            scores: kotcWinCounts
+          }
+        });
+        presenceChannelRef.current.unsubscribe();
+        presenceChannelRef.current = null;
+      }
+      // Show success feedback
+      let alertTitle = 'Game Completed!';
+      let alertMessage;
+      if (isRanked) {
+        const currentUserUpdate = updates.find(u => u.userId === currentUserId);
+        if (currentUserUpdate) {
+          const change = currentUserUpdate.eloAfter - currentUserUpdate.eloBefore;
+          const changeText = change > 0 ? `+${change}` : change.toString();
+          alertMessage = `Session ended and Elo rating updated:\n\nYour Elo: ${changeText}`;
+        } else {
+          alertMessage = 'Session ended and Elo ratings updated!';
+        }
+      } else {
+        alertMessage = 'Session ended!';
+      }
+      Alert.alert(
+        alertTitle,
+        alertMessage,
+        [{
+          text: 'OK',
+          onPress: () => {
+            router.replace('/profile?reload=1');
+          }
+        }]
+      );
+    } catch (err: any) {
+      console.error('❌ Error ending KOTC session:', err);
+      if (err.message && (err.message.includes('network') || err.message.includes('connection') || err.message.includes('fetch'))) {
+        handleNetworkError(err, 'ending KOTC session');
+      } else {
+        Alert.alert('Error', err.message || 'Failed to end session.');
+      }
+    } finally {
+      setIsSubmittingScores(false);
+    }
+  };
+
   return (
     <LinearGradient colors={['#1D1D1D', '#121212']} style={styles.container}>
       <Stack.Screen options={{ headerShown: false, presentation: 'modal' }} />
       <View style={styles.header}>
-        <Text style={styles.gameModeText}>{game_mode}</Text>
+        <Text style={styles.gameModeText}>
+          {game_mode === 'King of the Court' ? 'KOTC' : game_mode}
+        </Text>
         {gameStatus === 'in_progress' && (
           <View style={styles.inProgressBubble}>
             <Text style={styles.inProgressText}>In Progress</Text>
@@ -1337,6 +1543,36 @@ export default function LobbyScreen() {
                 name="checkmark-circle-outline" 
                 size={20} 
                 color={(!canSubmitScores() || isSubmittingScores) ? "#999999" : "#FFFFFF"} 
+              />
+            </LinearGradient>
+          </TouchableOpacity>
+        </View>
+      )}
+
+      {isHost && gameStatus === 'in_progress' && game_mode === 'King of the Court' && (
+        <View style={styles.startButtonContainer}>
+          <TouchableOpacity
+            style={[
+              styles.startButton,
+              isSubmittingScores && styles.startButtonDisabled
+            ]}
+            onPress={handleEndKOTCSession}
+            disabled={isSubmittingScores}
+          >
+            <LinearGradient
+              colors={isSubmittingScores ? ['#666666', '#444444'] : ['#FF8C66', '#FF6B35']}
+              style={styles.startButtonGradient}
+            >
+              <Text style={[
+                styles.startButtonText,
+                isSubmittingScores && styles.startButtonTextDisabled
+              ]}>
+                {isSubmittingScores ? 'Ending...' : 'End KOTC Session'}
+              </Text>
+              <Ionicons
+                name="checkmark-circle-outline"
+                size={20}
+                color={isSubmittingScores ? "#999999" : "#FFFFFF"}
               />
             </LinearGradient>
           </TouchableOpacity>
@@ -1583,5 +1819,16 @@ const styles = StyleSheet.create({
         elevation: 4,
         marginLeft: 10,
         marginHorizontal: 2,
+    },
+    kotcWinnerButton: {
+        padding: 12,
+        borderRadius: 12,
+        backgroundColor: '#FF6B35',
+        marginHorizontal: 4,
+    },
+    kotcWinnerButtonText: {
+        color: '#FFFFFF',
+        fontSize: 18,
+        fontWeight: 'bold',
     },
 }); 

@@ -88,6 +88,20 @@ class GameService {
     if (error) throw error;
     return game;
   }
+
+  async updateOnCourtPlayers(gameId: string, player1Id: string | null, player2Id: string | null) {
+    const { error } = await supabase
+      .from('games')
+      .update({
+        on_court_player_1: player1Id,
+        on_court_player_2: player2Id
+      })
+      .eq('id', gameId);
+    if (error) {
+      console.error('Error updating on-court players:', error);
+      throw new Error('Failed to update on-court players.');
+    }
+  }
 }
 
 export const gameService = new GameService(); 
