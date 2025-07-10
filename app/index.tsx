@@ -1,7 +1,8 @@
 import { LinearGradient } from 'expo-linear-gradient';
 import { Redirect } from 'expo-router';
 import React, { useEffect, useState } from 'react';
-import { Alert, StyleSheet, Text, TextInput, TouchableOpacity } from 'react-native';
+import { Alert, Animated, Easing, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import Svg, { Defs, Path, Stop, LinearGradient as SvgLinearGradient } from 'react-native-svg';
 import { supabase } from '../lib/supabase';
 
 export default function Index() {
@@ -52,15 +53,77 @@ export default function Index() {
 function AuthForms() {
   const [showLogin, setShowLogin] = useState(true);
 
+  // Animated value for fluid motion
+  const anim = React.useRef(new Animated.Value(0)).current;
+
+  React.useEffect(() => {
+    Animated.loop(
+      Animated.timing(anim, {
+        toValue: 1,
+        duration: 16000,
+        easing: Easing.inOut(Easing.sin),
+        useNativeDriver: false,
+      })
+    ).start();
+  }, [anim]);
+
+  // Interpolate control points for SVG paths
+  const topQ = anim.interpolate({ inputRange: [0, 0.5, 1], outputRange: [100, 80, 100] });
+  const midQ = anim.interpolate({ inputRange: [0, 0.5, 1], outputRange: [200, 220, 200] });
+  const bottomQ = anim.interpolate({ inputRange: [0, 0.5, 1], outputRange: [700, 720, 700] });
+  const accentQ = anim.interpolate({ inputRange: [0, 0.5, 1], outputRange: [350, 370, 350] });
+
+  // State to hold the animated path strings
+  const [paths, setPaths] = useState({
+    top: 'M0,200 Q100,100 200,200 T400,200 L400,0 L0,0 Z',
+    bottom: 'M0,600 Q200,700 400,600 L400,800 L0,800 Z',
+    accent: 'M100,400 Q200,350 300,400 T400,500 Q300,550 200,500 T100,400 Z',
+  });
+
+  useEffect(() => {
+    const id = anim.addListener(({ value }) => {
+      // Calculate control points
+      const tq = 100 + (Math.sin(value * Math.PI * 2) * 20); // 100 <-> 80
+      const mq = 200 + (Math.cos(value * Math.PI * 2) * 20); // 200 <-> 220
+      const bq = 700 + (Math.sin(value * Math.PI * 2 + 1) * 20); // 700 <-> 720
+      const aq = 350 + (Math.cos(value * Math.PI * 2 + 2) * 20); // 350 <-> 370
+      // Top path
+      const top = `M0,200 Q100,${tq} 200,${mq} T400,200 L400,0 L0,0 Z`;
+      // Bottom path
+      const bottom = `M0,600 Q200,${bq} 400,600 L400,800 L0,800 Z`;
+      // Accent blob
+      const accent = `M100,400 Q200,${aq} 300,400 T400,500 Q300,550 200,500 T100,400 Z`;
+      setPaths({ top, bottom, accent });
+    });
+    return () => anim.removeListener(id);
+  }, [anim]);
+
   return (
-    <LinearGradient
-      colors={['#FF6B35', '#E55A2B', '#1A1A1A']}
-      style={styles.container}
-      start={{ x: 0, y: 0 }}
-      end={{ x: 0, y: 1 }}
-    >
-      {showLogin ? <Login onSwitchToSignUp={() => setShowLogin(false)} /> : <SignUp onSwitchToLogin={() => setShowLogin(true)} />}
-    </LinearGradient>
+    <View style={{ flex: 1, width: '100%', justifyContent: 'center', alignItems: 'center', backgroundColor: '#181818' }}>
+      {/* Fluid Geometry SVG Background */}
+      <View style={{ ...StyleSheet.absoluteFillObject, zIndex: 0 }} pointerEvents="none">
+        <Svg height="100%" width="100%" viewBox="0 0 400 800" style={{ position: 'absolute', top: 0, left: 0 }}>
+          <Defs>
+            <SvgLinearGradient id="grad1" x1="0" y1="0" x2="1" y2="1">
+              <Stop offset="0%" stopColor="#FF6B35" stopOpacity="0.18" />
+              <Stop offset="100%" stopColor="#06B6D4" stopOpacity="0.12" />
+            </SvgLinearGradient>
+            <SvgLinearGradient id="grad2" x1="0" y1="1" x2="1" y2="0">
+              <Stop offset="0%" stopColor="#8B5CF6" stopOpacity="0.13" />
+              <Stop offset="100%" stopColor="#FF6B35" stopOpacity="0.10" />
+            </SvgLinearGradient>
+          </Defs>
+          {/* Main fluid shape */}
+          <Path d={paths.top} fill="url(#grad1)" />
+          <Path d={paths.bottom} fill="url(#grad2)" />
+          {/* Subtle accent blob */}
+          <Path d={paths.accent} fill="#FF6B35" opacity="0.07" />
+        </Svg>
+      </View>
+      <View style={{ flex: 1, width: '100%', justifyContent: 'center', alignItems: 'center', zIndex: 1 }}>
+        {showLogin ? <Login onSwitchToSignUp={() => setShowLogin(false)} /> : <SignUp onSwitchToLogin={() => setShowLogin(true)} />}
+      </View>
+    </View>
   );
 }
 
