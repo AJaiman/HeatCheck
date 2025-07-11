@@ -340,25 +340,70 @@ export default function LobbyScreen() {
     }
   };
 
-  const PlayerCard = ({ player, rank, teamColor, role }: { player: GamePlayer; rank?: number; teamColor?: string; role?: string }) => (
-    <View style={[styles.playerCard, teamColor ? { borderLeftColor: teamColor, borderLeftWidth: 4 } : {}]}>
+  // Swap a player to the other team (Classic mode)
+  const handleSwapTeam = async (player: GamePlayer) => {
+    if (game_mode !== 'Classic' || !gameId) return;
+    const currentTeam = player.team;
+    const otherTeam = currentTeam === 'Team A' ? 'Team B' : 'Team A';
+    const teamA = players.filter(p => p.team === 'Team A');
+    const teamB = players.filter(p => p.team === 'Team B');
+    const maxA = maxPlayersPerTeam;
+    const maxB = maxPlayersPerTeam;
+    if (
+      (currentTeam === 'Team A' && teamB.length >= maxB) ||
+      (currentTeam === 'Team B' && teamA.length >= maxA)
+    ) {
+      // No space on other team
+      return;
+    }
+    try {
+      await supabase
+        .from('game_players')
+        .update({ team: otherTeam })
+        .eq('game_id', gameId)
+        .eq('user_id', player.user_id);
+      // Broadcast swap to all clients (triggers DB change listeners)
+      if (presenceChannelRef.current) {
+        await presenceChannelRef.current.send({
+          type: 'broadcast',
+          event: 'player_swapped',
+          payload: { user_id: player.user_id, new_team: otherTeam }
+        });
+      }
+    } catch (err) {
+      console.error('Error swapping team:', err);
+    }
+  };
+
+  const PlayerCard = ({ player, rank, teamColor, role }: { player: GamePlayer; rank?: number; teamColor?: string; role?: string }) => {
+    // Show swap icon for host on all cards, for others only on their own card
+    const showSwap = (isHost || player.user_id === currentUserId) && game_mode === 'Classic';
+    return (
+      <View style={[styles.playerCard, teamColor ? { borderLeftColor: teamColor, borderLeftWidth: 4 } : {}]}> 
         <View style={styles.playerInfo}>
-            {rank && <Text style={styles.playerRank}>#{rank}</Text>}
-            <LinearGradient colors={['#4A4A4A', '#2C2C2C']} style={styles.playerAvatar} />
-            <View style={styles.playerDetails}>
-              <Text style={styles.playerText} numberOfLines={1}>{player.hoopname || 'Unknown Player'}</Text>
-              {role && <Text style={styles.playerRole}>{role}</Text>}
-            </View>
-            {/* Remove icon for host (not for self) */}
-            {isHost && player.user_id !== currentUserId && (
-              <TouchableOpacity onPress={() => handleRemovePlayer(player.user_id)} style={{ marginLeft: 8, padding: 4 }}>
-                <Ionicons name="remove-circle-outline" size={24} color="#FF4444" />
-              </TouchableOpacity>
-            )}
+          {rank && <Text style={styles.playerRank}>#{rank}</Text>}
+          <LinearGradient colors={['#4A4A4A', '#2C2C2C']} style={styles.playerAvatar} />
+          <View style={styles.playerDetails}>
+            <Text style={styles.playerText} numberOfLines={1}>{player.hoopname || 'Unknown Player'}</Text>
+            {role && <Text style={styles.playerRole}>{role}</Text>}
+          </View>
+          {/* Swap icon (leftmost) */}
+          {showSwap && (
+            <TouchableOpacity onPress={() => handleSwapTeam(player)} style={{ marginLeft: 0, marginRight: 8, padding: 4 }}>
+              <Ionicons name="swap-horizontal-outline" size={24} color="#06B6D4" />
+            </TouchableOpacity>
+          )}
+          {/* Remove icon for host (not for self) */}
+          {isHost && player.user_id !== currentUserId && (
+            <TouchableOpacity onPress={() => handleRemovePlayer(player.user_id)} style={{ marginLeft: 8, padding: 4 }}>
+              <Ionicons name="remove-circle-outline" size={24} color="#FF4444" />
+            </TouchableOpacity>
+          )}
         </View>
         {hostId === player.user_id && <Ionicons name="ribbon" size={20} color="#FFD700" />}
-    </View>
-  );
+      </View>
+    );
+  };
 
   const ClassicView = () => {
     const teamA = players.filter(p => p.team === 'Team A');
