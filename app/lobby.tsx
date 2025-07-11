@@ -2,7 +2,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useEffect, useRef, useState } from 'react';
-import { Alert, Clipboard, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { Alert, AppState, Clipboard, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { gameService } from '../lib/gameService';
 import { supabase } from '../lib/supabase';
 import { GameMode, GamePlayer } from '../types/game';
@@ -272,10 +272,71 @@ export default function LobbyScreen() {
     ]);
   };
 
+  // Leave game immediately (no confirmation)
+  const handleLeaveImmediate = async () => {
+    try {
+      console.log('🚪 User leaving lobby (immediate)...');
+      let userId: string | null = currentUserId ?? null;
+      if (!userId) {
+        const { data: { user } } = await supabase.auth.getUser();
+        userId = user?.id ?? null;
+      }
+      if (!userId) throw new Error('User not authenticated');
+      console.log('👤 Leaving user ID:', userId);
+      const game = await gameService.getGameByCode(game_code);
+      if (!game) throw new Error('Game not found');
+      const leavePromises = [];
+      leavePromises.push(
+        gameService.leaveGame(game.id, userId).then(() => {
+          console.log('✅ Removed from database');
+        }).catch((err: any) => {
+          console.error('❌ Database leave error:', err);
+        })
+      );
+      if (presenceChannelRef.current) {
+        console.log('📡 Removing from presence channel...');
+        leavePromises.push(
+          presenceChannelRef.current.untrack().then(() => {
+            console.log('✅ Removed from presence tracking');
+          }).catch((err: any) => {
+            console.error('❌ Presence untrack error:', err);
+          })
+        );
+      }
+      await Promise.all(leavePromises);
+      if (presenceChannelRef.current) {
+        presenceChannelRef.current.unsubscribe();
+        presenceChannelRef.current = null;
+        console.log('✅ Unsubscribed from presence channel');
+      }
+      router.back();
+    } catch (err: any) {
+      console.error('❌ Error leaving game (immediate):', err);
+    }
+  };
+
   const handleCopyCode = () => {
     if(game_code) {
         Clipboard.setString(game_code);
         Alert.alert('Copied!', 'Game code copied to clipboard.');
+    }
+  };
+
+  // Host removes a player from the game
+  const handleRemovePlayer = async (userId: string) => {
+    if (!gameId || !isHost || userId === currentUserId) return;
+    try {
+      await gameService.leaveGame(gameId, userId);
+      // Broadcast removal to all clients (triggers DB change listeners)
+      if (presenceChannelRef.current) {
+        await presenceChannelRef.current.send({
+          type: 'broadcast',
+          event: 'player_removed',
+          payload: { user_id: userId }
+        });
+      }
+    } catch (err) {
+      console.error('Error removing player:', err);
     }
   };
 
@@ -288,6 +349,12 @@ export default function LobbyScreen() {
               <Text style={styles.playerText} numberOfLines={1}>{player.hoopname || 'Unknown Player'}</Text>
               {role && <Text style={styles.playerRole}>{role}</Text>}
             </View>
+            {/* Remove icon for host (not for self) */}
+            {isHost && player.user_id !== currentUserId && (
+              <TouchableOpacity onPress={() => handleRemovePlayer(player.user_id)} style={{ marginLeft: 8, padding: 4 }}>
+                <Ionicons name="remove-circle-outline" size={24} color="#FF4444" />
+              </TouchableOpacity>
+            )}
         </View>
         {hostId === player.user_id && <Ionicons name="ribbon" size={20} color="#FFD700" />}
     </View>
@@ -972,6 +1039,14 @@ export default function LobbyScreen() {
           }
         }, 3000);
         
+        // Listen for player removal broadcast
+        channel.on('broadcast', { event: 'player_removed' }, (payload) => {
+          const removedUserId = payload.payload?.user_id;
+          if (removedUserId && removedUserId === currentUserId) {
+            handleLeaveImmediate();
+          }
+        });
+        
       } catch (error) {
         console.error('❌ Error joining lobby:', error);
       }
@@ -1419,6 +1494,19 @@ export default function LobbyScreen() {
       setIsSubmittingScores(false);
     }
   };
+
+  // AppState listener to remove user if app is backgrounded/closed while in lobby
+  useEffect(() => {
+    const handleAppStateChange = (nextAppState: string) => {
+      if (nextAppState !== 'active' && gameStatus === 'lobby') {
+        handleLeaveImmediate();
+      }
+    };
+    const subscription = AppState.addEventListener('change', handleAppStateChange);
+    return () => {
+      subscription.remove();
+    };
+  }, [gameStatus]);
 
   return (
     <LinearGradient colors={['#1D1D1D', '#121212']} style={styles.container}>

@@ -102,6 +102,31 @@ class GameService {
       throw new Error('Failed to update on-court players.');
     }
   }
+
+  async getInProgressGameForUser(userId: string) {
+    const { data, error } = await supabase
+      .from('game_players')
+      .select('game_id, games!inner(game_code, status, game_mode, host_id)')
+      .eq('user_id', userId)
+      .eq('games.status', 'in_progress')
+      .maybeSingle();
+    if (error) {
+      if (error.code === 'PGRST116') return null;
+      console.error('Error fetching in-progress game:', error);
+      throw new Error('Failed to fetch in-progress game.');
+    }
+    if (!data || !data.games) return null;
+    // Handle if data.games is an array (from join)
+    const gameObj = Array.isArray(data.games) ? data.games[0] : data.games;
+    if (!gameObj) return null;
+    return {
+      game_id: data.game_id,
+      game_code: gameObj.game_code,
+      status: gameObj.status,
+      game_mode: gameObj.game_mode,
+      host_id: gameObj.host_id,
+    };
+  }
 }
 
 export const gameService = new GameService(); 

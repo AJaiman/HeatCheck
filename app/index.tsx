@@ -3,16 +3,31 @@ import { Redirect } from 'expo-router';
 import React, { useEffect, useState } from 'react';
 import { Alert, Animated, Easing, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import Svg, { Defs, Path, Stop, LinearGradient as SvgLinearGradient } from 'react-native-svg';
+import { gameService } from '../lib/gameService';
 import { supabase } from '../lib/supabase';
 
 export default function Index() {
   const [isAuthenticated, setIsAuthenticated] = useState<boolean | null>(null);
+  const [inProgressGame, setInProgressGame] = useState<any | null>(null);
+  const [checkingGame, setCheckingGame] = useState(false);
 
   useEffect(() => {
     // Check initial auth state
     const checkAuthState = async () => {
       const { data: { session } } = await supabase.auth.getSession();
       setIsAuthenticated(!!session);
+      if (session) {
+        setCheckingGame(true);
+        try {
+          const userId = session.user.id;
+          const game = await gameService.getInProgressGameForUser(userId);
+          setInProgressGame(game);
+        } catch (e) {
+          setInProgressGame(null);
+        } finally {
+          setCheckingGame(false);
+        }
+      }
     };
 
     checkAuthState();
@@ -21,14 +36,22 @@ export default function Index() {
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       (event, session) => {
         setIsAuthenticated(!!session);
+        if (session) {
+          setCheckingGame(true);
+          gameService.getInProgressGameForUser(session.user.id)
+            .then(game => setInProgressGame(game))
+            .finally(() => setCheckingGame(false));
+        } else {
+          setInProgressGame(null);
+        }
       }
     );
 
     return () => subscription.unsubscribe();
   }, []);
 
-  // Show loading while checking auth state
-  if (isAuthenticated === null) {
+  // Show loading while checking auth state or in-progress game
+  if (isAuthenticated === null || (isAuthenticated && checkingGame)) {
     return (
       <LinearGradient
         colors={['#FF6B35', '#E55A2B', '#1A1A1A']}
@@ -39,6 +62,11 @@ export default function Index() {
         <Text style={styles.title}>Loading...</Text>
       </LinearGradient>
     );
+  }
+
+  // Redirect to lobby if in an in-progress game
+  if (isAuthenticated && inProgressGame && inProgressGame.game_code) {
+    return <Redirect href={`/lobby?game_code=${inProgressGame.game_code}&game_mode=${inProgressGame.game_mode}&host_id=${inProgressGame.host_id}`} />;
   }
 
   // Redirect to profile if authenticated
